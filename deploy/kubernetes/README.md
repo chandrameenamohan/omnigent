@@ -21,6 +21,65 @@ with TLS.
 - An Ingress controller (e.g. ingress-nginx) and cert-manager for TLS
 - A PostgreSQL database (managed or in-cluster — see below)
 
+### Install the cluster add-ons
+
+If your cluster doesn't already have an Ingress controller and cert-manager,
+install them (pin the versions to taste):
+
+```bash
+# ingress-nginx — use the provider manifest that matches your cluster
+# (this is the kind one; for EKS/GKE/AKS use that provider's manifest or Helm chart):
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+
+# cert-manager:
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+
+# wait until both are ready:
+kubectl wait -n ingress-nginx --for=condition=Ready pod \
+  -l app.kubernetes.io/component=controller --timeout=180s
+kubectl wait -n cert-manager --for=condition=Available deployment --all --timeout=180s
+```
+
+### Create a cert-manager issuer
+
+The Ingress requests its TLS cert from a `ClusterIssuer` named `letsencrypt-prod`
+(the `cert-manager.io/cluster-issuer` annotation in `base/ingress.yaml`). That
+issuer is **not** shipped here — create one before deploying, or change the
+annotation to match an issuer you already have. Two common choices:
+
+```yaml
+# Production — real certificates from Let's Encrypt
+# (needs a public domain and an Ingress reachable from the internet):
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: you@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx
+```
+
+```yaml
+# Local / dev — self-signed (no public DNS needed; browsers will warn):
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  selfSigned: {}
+```
+
+Apply your chosen issuer with `kubectl apply -f <file>`. Without it, cert-manager
+logs `IssuerNotFound` and no certificate is issued (the server still runs — only
+TLS is affected).
+
 ## Deploy with an external database
 
 Use this path when you have a managed Postgres (RDS, Cloud SQL, Neon, etc.).
@@ -35,11 +94,8 @@ Use this path when you have a managed Postgres (RDS, Cloud SQL, Neon, etc.).
    ```
 
 2. **Edit the Ingress** — replace `omnigent.example.com` in `base/ingress.yaml`
-   with your actual domain. The Ingress requests a TLS cert from a cert-manager
-   ClusterIssuer named `letsencrypt-prod` (the `cert-manager.io/cluster-issuer`
-   annotation). That issuer is **not** shipped here — create it first, or change
-   the annotation to match an issuer you already have. Without it cert-manager
-   logs `IssuerNotFound` and no certificate is issued.
+   with your actual domain, and make sure the `letsencrypt-prod` ClusterIssuer
+   exists (see [Create a cert-manager issuer](#create-a-cert-manager-issuer)).
 
 3. **Apply:**
 
@@ -67,7 +123,9 @@ with its own 10 Gi PVC. Good for dev/testing clusters.
    OMNIGENT_ACCOUNTS_COOKIE_SECRET: "$(openssl rand -hex 32)"
    ```
 
-2. **Edit the Ingress hostname** in `base/ingress.yaml`.
+2. **Edit the Ingress hostname** in `base/ingress.yaml`, and make sure the
+   `letsencrypt-prod` ClusterIssuer exists (see
+   [Create a cert-manager issuer](#create-a-cert-manager-issuer)).
 
 3. **Apply:**
 
@@ -92,6 +150,11 @@ kubectl port-forward -n omnigent svc/omnigent 8000:80
 The first boot runs database migrations before the server starts listening; the
 pod may restart once if the liveness probe fires during that window (see
 [Resource sizing](#resource-sizing)).
+
+To exercise the **Ingress** path locally instead of port-forwarding, set the
+Ingress host to a domain that already resolves to localhost — e.g.
+`omnigent.localtest.me` or `<node-ip>.sslip.io` — pair it with the `selfSigned`
+issuer above, and reach it through your Ingress controller's published port.
 
 ## Next steps: connect a host
 
