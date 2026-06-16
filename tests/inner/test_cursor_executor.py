@@ -67,6 +67,8 @@ def _install_fake_sdk(
         "launch_kwargs": [],
         "sent": [],
         "closed": 0,
+        "client_closed": 0,
+        "agent_closed": 0,
     }
 
     class _FakeRun:
@@ -88,8 +90,10 @@ def _install_fake_sdk(
             state["sent"].append(prompt)
             return _FakeRun(scripts.pop(0))
 
+        # AsyncAgent exposes close() (a CloseAgent RPC + tool unregister).
         async def close(self) -> None:
             state["closed"] += 1
+            state["agent_closed"] += 1
 
     class _FakeClient:
         @classmethod
@@ -97,8 +101,13 @@ def _install_fake_sdk(
             state["launch_kwargs"].append(kwargs)
             return cls()
 
-        async def close(self) -> None:
+        # The real AsyncClient exposes ONLY aclose() (no close()); it owns the
+        # bridge subprocess + the daemon tool-callback server, both torn down
+        # there. Deliberately no close() here so a regression that closes the
+        # client via close() fails (AttributeError -> swallowed -> leak).
+        async def aclose(self) -> None:
             state["closed"] += 1
+            state["client_closed"] += 1
 
     class _FakeAsyncAgent:
         @classmethod
@@ -357,7 +366,26 @@ async def test_setup_failure_closes_client_and_drops_session(
     errors = [e for e in events if isinstance(e, ExecutorError)]
     assert len(errors) == 1 and "bad CURSOR_API_KEY" in errors[0].message
     assert "conv1" not in executor._session_states  # session dropped
-    assert state["closed"] == 1  # the launched bridge client was closed → no leak
+    # The launched bridge client was torn down via aclose() → no orphaned bridge.
+    assert state["closed"] == 1
+    assert state["client_closed"] == 1
+
+
+async def test_close_session_tears_down_bridge_client_via_aclose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A normal session close must tear the bridge-owning AsyncClient down via
+    ``aclose()`` — its only teardown path (it owns the bridge subprocess + the
+    daemon tool-callback thread). The real SDK client has no ``close()``, so
+    closing via ``close()`` silently leaks; this pins the client to aclose()."""
+    state = _install_fake_sdk(monkeypatch, [{"messages": [_assistant("ok")], "result": "ok"}])
+    executor = CursorExecutor(api_key="crsr_x")
+    _ = [e async for e in executor.run_turn([_user("hi")], [], "SYS")]
+    assert state["client_closed"] == 0  # still live mid-conversation
+    await executor.close()
+    # Both the agent (close) and the bridge-owning client (aclose) are released.
+    assert state["agent_closed"] == 1
+    assert state["client_closed"] == 1
 
 
 async def test_mid_turn_error_status_drops_session(monkeypatch: pytest.MonkeyPatch) -> None:
