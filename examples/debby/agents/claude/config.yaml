@@ -6,10 +6,12 @@ description: >-
 
 # Claude Code (claude-native) terminal responder. This head launches the real
 # `claude` CLI as an openable/takeover terminal session (like Polly's workers),
-# rather than running in-process on the Claude Agent SDK. No model is pinned, so
-# it runs on whatever Claude provider you configured (`omnigent setup`). It has
-# filesystem access (see the ``os_env`` block below) so it can read reference
-# files while reasoning.
+# rather than running in-process on the Claude Agent SDK. No model is pinned:
+# the `claude` CLI selects the model and resolves credentials itself — honoring
+# an `omnigent setup` provider when one is configured for the Claude harness,
+# otherwise using its own login (e.g. a Claude subscription). It has filesystem
+# access (see the ``os_env`` block below) so it can read reference files while
+# reasoning.
 executor:
   type: omnigent
   config:

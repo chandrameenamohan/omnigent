@@ -53,12 +53,15 @@ def test_debby_is_two_headed_cross_vendor(debby_spec: AgentSpec) -> None:
 
 def test_debby_heads_are_unpinned(debby_spec: AgentSpec) -> None:
     """
-    Neither head pins a model: each inherits whatever Claude / OpenAI provider
-    the user configured (Anthropic key, subscription, gateway, or Databricks).
+    Neither head pins a model: the real ``claude`` / ``codex`` CLI resolves the
+    model and credentials itself — honoring an ``omnigent setup`` provider when
+    one is configured, otherwise using the CLI's own login (Claude / ChatGPT
+    subscription). The GPT head still never silently routes to ambient
+    Databricks the way an unpinned openai-agents head would.
 
-    Un-pinning is load-bearing for OSS — a Databricks-specific model id would
-    404 on a plain Anthropic / OpenAI key. Re-introducing a pin re-couples a
-    head to one provider, so fail here if a model reappears.
+    Un-pinning is load-bearing for OSS — a pinned Databricks-specific model id
+    would 404 on a subscription / plain Anthropic / OpenAI login. Re-introducing
+    a pin re-couples a head to one provider, so fail here if a model reappears.
     """
     by_name = {a.name: a for a in debby_spec.sub_agents}
     for name in ("claude", "gpt"):

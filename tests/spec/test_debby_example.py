@@ -46,6 +46,15 @@ def test_debby_gpt_head_uses_codex_native_not_openai_agents() -> None:
         f"silently falls back to ambient Databricks credentials."
     )
 
+    # The Polly-compatible native field must be present, not just the harness
+    # name — a headless head can't answer Codex approval prompts. The spec
+    # parser str-coerces config values, so ``yolo: true`` arrives as the string
+    # ``"True"``; compare the lowercased spelling.
+    assert str(gpt.executor.config.get("yolo")).strip().lower() == "true", (
+        "Debby's GPT head must set ``yolo: true`` so the codex-native CLI runs "
+        "with full approval/sandbox bypass (headless heads can't answer prompts)."
+    )
+
     # Belt-and-suspenders: the GPT head must not pin a Databricks model or
     # Databricks auth, so it can only resolve the OpenAI/Codex provider.
     model = gpt.executor.config.get("model")
@@ -91,6 +100,15 @@ def test_debby_claude_head_uses_claude_native() -> None:
     assert "claude" in by_name, (
         f"Debby should declare a 'claude' sub-agent; got {sorted(by_name)}."
     )
-    assert by_name["claude"].executor.harness_kind == "claude-native", (
+    claude = by_name["claude"]
+    assert claude.executor.harness_kind == "claude-native", (
         "Debby's Claude head should run on the 'claude-native' harness."
+    )
+    # The Polly-compatible native field must be present, not just the harness
+    # name — managed Claude settings disable bypassPermissions, so a headless
+    # head needs ``permission_mode: auto`` to auto-approve without prompting.
+    assert claude.executor.config.get("permission_mode") == "auto", (
+        "Debby's Claude head must set ``permission_mode: auto`` so the "
+        "claude-native CLI auto-approves without prompting (headless heads "
+        "can't answer ApprovalCards)."
     )
