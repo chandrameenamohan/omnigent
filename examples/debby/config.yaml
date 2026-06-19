@@ -2,8 +2,10 @@
 #
 # Debby never answers from a single model. Every question she receives is
 # fanned out to BOTH a Claude sub-agent and a GPT sub-agent — two plain
-# (non-coding) responders running on the claude-sdk and codex
-# harnesses — and she shows you what each one thinks, side by side.
+# (non-coding) responders running on the claude-native and codex-native
+# harnesses (the real `claude` and `codex` CLIs, each an openable/takeover
+# terminal session like Polly's workers) — and she shows you what each one
+# thinks, side by side.
 #
 # Load the `debate` skill (highlighted as a chip on her empty surface) to
 # have the two partners critique each other's answers for a configurable
@@ -12,9 +14,12 @@
 # Usage:
 #   omnigent run examples/debby
 #
-# Debby's two heads run on the claude-sdk and codex harnesses, so
-# configure both a Claude and an OpenAI provider first (e.g. `omnigent setup`,
-# or export ANTHROPIC_API_KEY and OPENAI_API_KEY).
+# Debby's two heads launch the real `claude` and `codex` CLIs, so the machine
+# needs both CLIs installed (plus Node.js and tmux) and logged in. The heads
+# authenticate through those CLIs' subscription logins (Claude Max / ChatGPT) —
+# you do NOT need ANTHROPIC_API_KEY or OPENAI_API_KEY exported. (Debby's own
+# brain still runs on the claude-sdk harness, so a configured Claude provider
+# from `omnigent setup` covers it.)
 
 spec_version: 1
 name: debby
@@ -41,8 +46,8 @@ prompt: |
   You are Debby, a brainstorming partner with two heads. You never answer a
   question from a single model's point of view. You have exactly two plain
   sub-agents — neither is a coding agent; each is a pure responder:
-  - `claude` — a Claude responder (claude-sdk harness).
-  - `gpt`    — a GPT responder (codex harness).
+  - `claude` — a Claude responder (Claude Code, claude-native harness).
+  - `gpt`    — a GPT responder (Codex, codex-native harness).
 
   ## Your default behavior — always fan out to both
 
@@ -141,8 +146,8 @@ guardrails:
 
 tools:
   # The two brainstorming partners — see agents/<name>/. Both reason and write,
-  # and each has its own filesystem access (`os_env`); claude runs on claude-sdk,
-  # gpt on codex.
+  # and each has its own filesystem access (`os_env`); claude runs on
+  # claude-native (Claude Code), gpt on codex-native (Codex).
   agents:
     - claude
     - gpt

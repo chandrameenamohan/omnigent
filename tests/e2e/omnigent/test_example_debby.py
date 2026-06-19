@@ -2,14 +2,14 @@
 
 Debby never answers from a single model: every question is fanned out to BOTH a
 Claude sub-agent and a GPT sub-agent — two plain (non-coding) responders on the
-claude-sdk and codex harnesses — and the ``debate`` skill has them
-critique each other before converging. Pure spec-load — no LLM, no credentials —
-modeled on ``test_example_polly.py``.
+claude-native and codex-native harnesses (the real ``claude`` and ``codex``
+CLIs) — and the ``debate`` skill has them critique each other before converging.
+Pure spec-load — no LLM, no credentials — modeled on ``test_example_polly.py``.
 
 What breaks if this fails:
 - the two heads collapse onto one vendor (no cross-model contrast — Debby's whole
   point), or a head is dropped entirely,
-- a head silently switches harness (e.g. the GPT head ends up on claude-sdk),
+- a head silently switches harness (e.g. the GPT head ends up on claude-native),
 - the ``debate`` skill is dropped or renamed (the critique loop regresses),
 - the ``os_env`` block disappears (the heads lose the file/shell tools the
   brainstorming surface relies on).
@@ -36,8 +36,8 @@ def debby_spec() -> AgentSpec:
 
 def test_debby_is_two_headed_cross_vendor(debby_spec: AgentSpec) -> None:
     """
-    Debby has exactly two heads — ``claude`` on claude-sdk and ``gpt`` on
-    codex — so every answer contrasts two distinct vendors.
+    Debby has exactly two heads — ``claude`` on claude-native and ``gpt`` on
+    codex-native — so every answer contrasts two distinct vendors.
 
     A missing/renamed head, or both heads landing on the same harness, removes
     the cross-model contrast that is Debby's entire reason to exist.
@@ -45,8 +45,8 @@ def test_debby_is_two_headed_cross_vendor(debby_spec: AgentSpec) -> None:
     assert debby_spec.name == "debby"
     fam = {a.name: a.executor.config.get("harness") for a in debby_spec.sub_agents}
     assert sorted(debby_spec.tools.agents) == ["claude", "gpt"]
-    assert fam["claude"] == "claude-sdk"
-    assert fam["gpt"] == "codex"
+    assert fam["claude"] == "claude-native"
+    assert fam["gpt"] == "codex-native"
     # Two distinct vendors → the heads always disagree across providers.
     assert len(set(fam.values())) == 2
 

@@ -1,13 +1,14 @@
 """Regression guard for the Debby example's GPT head.
 
-Debby's "GPT" sub-agent must run on the ``codex`` harness, not
-``openai-agents``. The openai-agents harness treats an unpinned model as a
-Databricks model (``is_databricks_model = model is None`` in
+Debby's "GPT" sub-agent must run on the ``codex-native`` harness (the real
+Codex CLI), not ``openai-agents``. The openai-agents harness treats an unpinned
+model as a Databricks model (``is_databricks_model = model is None`` in
 ``omnigent/inner/openai_agents_sdk_executor.py``) and, with no
 ``OPENAI_API_KEY`` / ``OPENAI_BASE_URL`` in the environment, silently falls
 back to ambient Databricks credentials — routing the "GPT" head through the
-Databricks gateway instead of OpenAI. The ``codex`` harness is GPT-only, uses
-OpenAI's native auth, and has no such unpinned-model Databricks fallback.
+Databricks gateway instead of OpenAI. The Codex CLI is GPT-only, authenticates
+through the Codex CLI login (ChatGPT subscription), and has no such
+unpinned-model Databricks fallback.
 
 This is a non-live parse-only check so it runs in the default suite (the
 dir-shaped example's own e2e coverage lives under ``tests/e2e``, which is
@@ -26,8 +27,8 @@ _DEBBY_DIR = _REPO_ROOT / "examples" / "debby"
 _PACKAGED_DEBBY_DIR = _REPO_ROOT / "omnigent" / "resources" / "examples" / "debby"
 
 
-def test_debby_gpt_head_uses_codex_not_openai_agents() -> None:
-    """The GPT head runs on ``codex`` and never silently routes to Databricks.
+def test_debby_gpt_head_uses_codex_native_not_openai_agents() -> None:
+    """The GPT head runs on ``codex-native`` and never silently routes to Databricks.
 
     If this flips back to ``openai-agents`` with no pinned model, Debby's GPT
     head falls back to ambient Databricks credentials for any user with a
@@ -39,8 +40,8 @@ def test_debby_gpt_head_uses_codex_not_openai_agents() -> None:
     assert "gpt" in by_name, f"Debby should declare a 'gpt' sub-agent; got {sorted(by_name)}."
     gpt = by_name["gpt"]
 
-    assert gpt.executor.harness_kind == "codex", (
-        f"Debby's GPT head must run on the 'codex' harness; got "
+    assert gpt.executor.harness_kind == "codex-native", (
+        f"Debby's GPT head must run on the 'codex-native' harness; got "
         f"{gpt.executor.harness_kind!r}. 'openai-agents' with no pinned model "
         f"silently falls back to ambient Databricks credentials."
     )
@@ -53,7 +54,7 @@ def test_debby_gpt_head_uses_codex_not_openai_agents() -> None:
     )
     assert not isinstance(gpt.executor.auth, DatabricksAuth), (
         "Debby's GPT head must not declare Databricks auth — it should route "
-        "to OpenAI via the codex harness."
+        "to OpenAI via the codex-native harness."
     )
 
 
@@ -76,20 +77,20 @@ def test_packaged_debby_resource_stays_in_sync_with_source_example() -> None:
     assert "gpt" in by_name, (
         f"Packaged Debby should declare a 'gpt' sub-agent; got {sorted(by_name)}."
     )
-    assert by_name["gpt"].executor.harness_kind == "codex", (
-        "Packaged Debby's GPT head must run on the 'codex' harness; bundled "
-        "launches must not fall back to openai-agents."
+    assert by_name["gpt"].executor.harness_kind == "codex-native", (
+        "Packaged Debby's GPT head must run on the 'codex-native' harness; "
+        "bundled launches must not fall back to openai-agents."
     )
 
 
-def test_debby_claude_head_unchanged() -> None:
-    """The Claude head still runs on ``claude-sdk`` (the fix is GPT-only)."""
+def test_debby_claude_head_uses_claude_native() -> None:
+    """The Claude head runs on ``claude-native`` (the real Claude Code CLI)."""
     spec = parse(_DEBBY_DIR)
     by_name = {sub.name: sub for sub in spec.sub_agents}
 
     assert "claude" in by_name, (
         f"Debby should declare a 'claude' sub-agent; got {sorted(by_name)}."
     )
-    assert by_name["claude"].executor.harness_kind == "claude-sdk", (
-        "Debby's Claude head should remain on the 'claude-sdk' harness."
+    assert by_name["claude"].executor.harness_kind == "claude-native", (
+        "Debby's Claude head should run on the 'claude-native' harness."
     )
