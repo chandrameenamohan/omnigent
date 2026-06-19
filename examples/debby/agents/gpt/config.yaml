@@ -14,11 +14,15 @@ description: >-
 #
 # Why codex-native: it runs the real Codex CLI, which authenticates through the
 # Codex CLI login (your ChatGPT subscription) rather than an OPENAI_API_KEY in
-# the environment. Unlike the openai-agents harness — which treats an unpinned
-# model as a Databricks model (see omnigent/inner/openai_agents_sdk_executor.py
-# — `is_databricks_model = model is None`) and so silently routes an unpinned
-# "GPT" head to ambient Databricks credentials — codex-native has no such
-# unpinned-model Databricks fallback, keeping Debby's "GPT" head on OpenAI.
+# the environment. The point of leaving the model unpinned is to avoid the
+# openai-agents footgun: that harness treats an unpinned model as a Databricks
+# model (see omnigent/inner/openai_agents_sdk_executor.py — `is_databricks_model
+# = model is None`) and silently routes an unpinned "GPT" head to ambient
+# Databricks credentials. codex-native has no such unpinned-model -> Databricks
+# default — absent a Databricks provider it uses the Codex CLI login. (Like any
+# harness, it WILL honor an explicitly-configured or ambient Databricks provider
+# if you have one set; it just never picks Databricks merely because the model
+# is unpinned.)
 executor:
   type: omnigent
   config:

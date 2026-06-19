@@ -56,8 +56,10 @@ def test_debby_heads_are_unpinned(debby_spec: AgentSpec) -> None:
     Neither head pins a model: the real ``claude`` / ``codex`` CLI resolves the
     model and credentials itself — honoring an ``omnigent setup`` provider when
     one is configured, otherwise using the CLI's own login (Claude / ChatGPT
-    subscription). The GPT head still never silently routes to ambient
-    Databricks the way an unpinned openai-agents head would.
+    subscription). Leaving the model unpinned does not auto-route the GPT head
+    to Databricks the way an unpinned openai-agents head would (no
+    unpinned-model -> Databricks default); absent a Databricks provider it uses
+    the Codex CLI login.
 
     Un-pinning is load-bearing for OSS — a pinned Databricks-specific model id
     would 404 on a subscription / plain Anthropic / OpenAI login. Re-introducing

@@ -6,9 +6,11 @@ model as a Databricks model (``is_databricks_model = model is None`` in
 ``omnigent/inner/openai_agents_sdk_executor.py``) and, with no
 ``OPENAI_API_KEY`` / ``OPENAI_BASE_URL`` in the environment, silently falls
 back to ambient Databricks credentials — routing the "GPT" head through the
-Databricks gateway instead of OpenAI. The Codex CLI is GPT-only, authenticates
-through the Codex CLI login (ChatGPT subscription), and has no such
-unpinned-model Databricks fallback.
+Databricks gateway. codex-native has no such unpinned-model -> Databricks
+default: it is GPT-only and, absent a Databricks provider, authenticates
+through the Codex CLI login (ChatGPT subscription). (Like any harness it would
+still honor an explicitly-configured or ambient Databricks provider if one were
+set; it just never picks Databricks merely because the model is unpinned.)
 
 This is a non-live parse-only check so it runs in the default suite (the
 dir-shaped example's own e2e coverage lives under ``tests/e2e``, which is
@@ -28,11 +30,13 @@ _PACKAGED_DEBBY_DIR = _REPO_ROOT / "omnigent" / "resources" / "examples" / "debb
 
 
 def test_debby_gpt_head_uses_codex_native_not_openai_agents() -> None:
-    """The GPT head runs on ``codex-native`` and never silently routes to Databricks.
+    """The GPT head runs on ``codex-native`` with no unpinned-model -> Databricks default.
 
     If this flips back to ``openai-agents`` with no pinned model, Debby's GPT
     head falls back to ambient Databricks credentials for any user with a
     Databricks profile configured — the exact bug this example was fixed for.
+    codex-native has no such default (it would still honor an explicitly
+    configured Databricks provider, which this guard separately rules out).
     """
     spec = parse(_DEBBY_DIR)
     by_name = {sub.name: sub for sub in spec.sub_agents}
@@ -55,15 +59,16 @@ def test_debby_gpt_head_uses_codex_native_not_openai_agents() -> None:
         "with full approval/sandbox bypass (headless heads can't answer prompts)."
     )
 
-    # Belt-and-suspenders: the GPT head must not pin a Databricks model or
-    # Databricks auth, so it can only resolve the OpenAI/Codex provider.
+    # Belt-and-suspenders: the GPT head must not itself pin a Databricks model
+    # or declare Databricks auth (the example ships no Databricks provider, so
+    # codex-native defaults to the Codex CLI login).
     model = gpt.executor.config.get("model")
     assert model is None or not str(model).startswith("databricks-"), (
         f"Debby's GPT head must not pin a Databricks-hosted model; got {model!r}."
     )
     assert not isinstance(gpt.executor.auth, DatabricksAuth), (
-        "Debby's GPT head must not declare Databricks auth — it should route "
-        "to OpenAI via the codex-native harness."
+        "Debby's GPT head must not declare Databricks auth — the example leaves "
+        "the GPT head on the Codex CLI login by default."
     )
 
 
