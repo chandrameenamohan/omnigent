@@ -1,0 +1,27 @@
+# ~/.omnigent/config.yaml — point the Pi worker at the local CLI bridge.
+#
+# Drop this `providers:` block into your ~/.omnigent/config.yaml (merge it with
+# any block you already have). It declares one gateway provider aimed at the
+# bridge in this directory (bridge.py).
+#
+# How it routes: Pi's gateway provider writes Pi a models.json pointing at this
+# base_url. The bridge is an OpenAI-compatible /v1 endpoint that shells each
+# request into the real `claude`/`codex` CLI — so Pi's model calls are answered
+# by whichever CLI the bridge runs, on that CLI's OWN subscription login. No
+# token is replayed (see README.md).
+#
+# `default: [pi]` makes this provider the Pi-surface default, so the Pi worker
+# uses it without any per-agent override. The bridge ignores api_key (the CLI
+# authenticates itself), so any placeholder works.
+providers:
+  cli-bridge:
+    kind: gateway
+    default: [pi]
+    openai:
+      base_url: http://localhost:8848/v1
+      api_key: unused-the-cli-authenticates-itself
+      models:
+        # Selects the bridge CLI when its CLI env var is unset: a name with
+        # "gpt"/"codex" routes to `codex exec`, anything else to `claude -p`.
+        # Setting CLI=claude or CLI=codex on the bridge overrides this.
+        default: claude
