@@ -53,7 +53,7 @@ def flatten(messages):
     parts = []
     for m in messages:
         role = m.get("role", "user")
-        content = m.get("content", "")
+        content = m.get("content") or ""  # None/falsy -> "", not the literal "None"
         if isinstance(content, list):
             content = "".join(
                 p.get("text", "") for p in content if isinstance(p, dict)
@@ -145,6 +145,9 @@ def demo():
     """
     global run_cli
     real = run_cli
+    # Pop CLI up front so cli-selection asserts hold even when the operator has
+    # it set; restore in finally. (Also exercises the model-name fallback.)
+    old_cli = os.environ.pop("CLI", None)
     captured = {}
 
     def fake(cli, prompt):
@@ -165,31 +168,38 @@ def demo():
                 ],
             }
         )
-    finally:
-        run_cli = real
 
-    # The flattened prompt reached the CLI with every turn, in order.
-    assert "system: be terse" in captured["prompt"], captured["prompt"]
-    assert "user: what is 6*7?" in captured["prompt"], captured["prompt"]
-    assert "user: show work" in captured["prompt"], captured["prompt"]
-    assert captured["cli"] == "claude", captured["cli"]
+        # The EXACT flattened prompt — full equality catches reordered turns
+        # and wrong separators.
+        assert captured["prompt"] == (
+            "system: be terse\n\nuser: what is 6*7?\n\nuser: show work"
+        ), captured["prompt"]
+        assert captured["cli"] == "claude", captured["cli"]
 
-    # The CLI text came back wrapped in OpenAI chat-completions shape.
-    assert resp["object"] == "chat.completion"
-    choice = resp["choices"][0]
-    assert choice["message"] == {"role": "assistant", "content": "the answer is 42"}
-    assert choice["finish_reason"] == "stop"
-    assert resp["model"] == "claude-sonnet"
+        # Response must serialize and carry the chat-completions fields.
+        assert json.loads(json.dumps(resp)) == resp  # JSON round-trips
+        assert resp["id"] == "chatcmpl-bridge"
+        assert resp["object"] == "chat.completion"
+        assert isinstance(resp["created"], int)
+        assert resp["model"] == "claude-sonnet"
+        choice = resp["choices"][0]
+        assert choice["index"] == 0
+        assert choice["message"] == {"role": "assistant", "content": "the answer is 42"}
+        assert choice["finish_reason"] == "stop"
+        assert set(resp["usage"]) == {
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+        }, resp["usage"]
 
-    # CLI selection by model name when the CLI env var is unset.
-    old = os.environ.pop("CLI", None)
-    try:
+        # CLI selection by model name (CLI env popped above).
         assert pick_cli("gpt-5.5") == "codex"
         assert pick_cli("codex-mini") == "codex"
         assert pick_cli("claude-opus-4-8") == "claude"
     finally:
-        if old is not None:
-            os.environ["CLI"] = old
+        run_cli = real
+        if old_cli is not None:
+            os.environ["CLI"] = old_cli
 
     print("self-check passed")
 
