@@ -6,23 +6,26 @@ description: >-
 
 # Codex (codex-native) terminal responder. This head launches the real `codex`
 # CLI as an openable/takeover terminal session (like Polly's workers), rather
-# than running in-process. No model is pinned: the `codex` CLI selects the model
-# and resolves credentials itself — honoring an `omnigent setup` provider when
-# one is configured for the Codex harness, otherwise using its own login (your
-# ChatGPT subscription). It has filesystem access (see the ``os_env`` block
-# below) so it can read reference files while reasoning.
+# than running in-process. No model is pinned: the `codex` CLI resolves the
+# model and credentials the way the native harness does — it honors a configured
+# OR ambient Omnigent provider when one is present (a Codex-harness `omnigent
+# setup` provider, an OpenAI-compatible gateway, or an ambient OPENAI_API_KEY in
+# the environment), and falls back to its own login (your ChatGPT subscription)
+# only when nothing else routes. It has filesystem access (see the ``os_env``
+# block below) so it can read reference files while reasoning.
 #
-# Why codex-native: it runs the real Codex CLI. In Debby's intended setup it
-# authenticates through the Codex CLI login (your ChatGPT subscription), so no
-# OPENAI_API_KEY is required. The point of leaving the model unpinned is to avoid the
+# Why codex-native: it runs the real Codex CLI. When nothing else routes it uses
+# the Codex CLI login (a ChatGPT subscription, no OPENAI_API_KEY needed) — but a
+# configured or ambient OpenAI provider, including an ambient OPENAI_API_KEY,
+# wins first. The point of leaving the model unpinned is to avoid the
 # openai-agents footgun: that harness treats an unpinned model as a Databricks
 # model (see omnigent/inner/openai_agents_sdk_executor.py — `is_databricks_model
 # = model is None`) and silently routes an unpinned "GPT" head to ambient
 # Databricks credentials. codex-native has no such unpinned-model -> Databricks
-# default — absent a Databricks provider it uses the Codex CLI login. (Like any
-# harness, it WILL honor an explicitly-configured or ambient Databricks provider
-# if you have one set; it just never picks Databricks merely because the model
-# is unpinned.)
+# default — absent any configured/ambient provider it uses the Codex CLI login.
+# (Like any harness, it WILL honor an explicitly-configured or ambient Databricks
+# provider if you have one set; it just never picks Databricks merely because the
+# model is unpinned.)
 executor:
   type: omnigent
   config:

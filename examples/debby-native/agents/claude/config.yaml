@@ -7,11 +7,13 @@ description: >-
 # Claude Code (claude-native) terminal responder. This head launches the real
 # `claude` CLI as an openable/takeover terminal session (like Polly's workers),
 # rather than running in-process on the Claude Agent SDK. No model is pinned:
-# the `claude` CLI selects the model and resolves credentials itself — honoring
-# an `omnigent setup` provider when one is configured for the Claude harness,
-# otherwise using its own login (e.g. a Claude subscription). It has filesystem
-# access (see the ``os_env`` block below) so it can read reference files while
-# reasoning.
+# the `claude` CLI resolves the model and credentials the way the native harness
+# does — it honors a configured OR ambient Omnigent provider when one is present
+# (a Claude-harness `omnigent setup` provider, or an ambient ANTHROPIC_API_KEY /
+# Anthropic-compatible gateway in the environment), and falls back to its own
+# login (e.g. a Claude subscription) only when nothing else routes. It has
+# filesystem access (see the ``os_env`` block below) so it can read reference
+# files while reasoning.
 executor:
   type: omnigent
   config:

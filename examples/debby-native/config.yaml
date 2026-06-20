@@ -16,10 +16,14 @@
 #
 # Deploy/setup: because the two heads launch the real `claude` and `codex`
 # CLIs, the machine needs both CLIs installed (plus Node.js and tmux) and
-# logged in. Each head authenticates through its CLI's own login/config — a
-# subscription (Claude Max / ChatGPT) OR an API key both work, whichever the
-# CLI is set up with; you do not need to export keys into omnigent's own
-# environment for the heads. (Debby-native's own brain still runs on the
+# logged in. Each head resolves its model and credentials the way the native
+# harness does: it honors a configured OR ambient Omnigent provider when one is
+# present (an `omnigent setup` provider, or an ambient ANTHROPIC_API_KEY /
+# OPENAI_API_KEY / OpenAI-compatible gateway in the environment), and falls
+# back to the CLI's own login only when nothing else routes — so a Claude Max /
+# ChatGPT subscription works without exporting any keys, while an ambient key or
+# configured provider, if present, wins first. Either way works; whichever
+# source resolves first is used. (Debby-native's own brain still runs on the
 # claude-sdk harness, so a configured Claude provider from `omnigent setup`
 # covers it.)
 
