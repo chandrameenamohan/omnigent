@@ -4,14 +4,22 @@ description: >-
   Plain Claude brainstorming responder — answers a question on its own
   merits, and (during a debate) critiques the other partner's answer.
 
-# Plain responder on the Claude Agent SDK. No model is pinned, so it runs on
-# whatever Claude provider you configured (`omnigent setup`). It has filesystem
+# Claude Code (claude-native) terminal responder. This head launches the real
+# `claude` CLI as an openable/takeover terminal session (like Polly's workers),
+# rather than running in-process on the Claude Agent SDK. No model is pinned:
+# the `claude` CLI selects the model and resolves credentials itself — honoring
+# an `omnigent setup` provider when one is configured for the Claude harness,
+# otherwise using its own login (e.g. a Claude subscription). It has filesystem
 # access (see the ``os_env`` block below) so it can read reference files while
 # reasoning.
 executor:
   type: omnigent
   config:
-    harness: claude-sdk
+    harness: claude-native
+    # Headless workers can't answer ApprovalCards, and managed Claude
+    # settings disable ``bypassPermissions``. ``auto`` auto-approves without
+    # prompting and is allowed under managed settings (-> ``--permission-mode auto``).
+    permission_mode: auto
 
 # Declaring ``os_env`` registers the ``sys_os_read`` / ``sys_os_write`` /
 # ``sys_os_edit`` / ``sys_os_shell`` tools (filesystem access comes bundled with
@@ -43,7 +51,9 @@ prompt: |
   thinking-and-writing responder with filesystem access: use your `sys_os_*`
   tools to read any files you need as reference. Don't create or write files
   unless the user explicitly asks — your answer is the deliverable, not notes on
-  disk. Your substance is still your own reasoning.
+  disk. You run on the real Claude Code CLI, so write and shell tools are present
+  even though you should not need them here; leave the workspace untouched. Your
+  substance is still your own reasoning.
 
   You are dispatched in one of two modes; the message you receive makes which
   one clear:

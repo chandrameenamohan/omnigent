@@ -4,33 +4,22 @@ description: >-
   Plain GPT brainstorming responder — answers a question on its own merits,
   and (during a debate) critiques the other partner's answer.
 
-# Codex (codex-native) terminal responder. This head launches the real `codex`
-# CLI as an openable/takeover terminal session (like Polly's workers), rather
-# than running in-process. No model is pinned: the `codex` CLI selects the model
-# and resolves credentials itself — honoring an `omnigent setup` provider when
-# one is configured for the Codex harness, otherwise using its own login (your
-# ChatGPT subscription). It has filesystem access (see the ``os_env`` block
-# below) so it can read reference files while reasoning.
+# Plain responder on the Codex harness. No model is pinned, so it resolves your
+# configured OpenAI/Codex provider's default GPT model. It has filesystem access
+# (see the ``os_env`` block below) so it can read reference files while
+# reasoning.
 #
-# Why codex-native: it runs the real Codex CLI. In Debby's intended setup it
-# authenticates through the Codex CLI login (your ChatGPT subscription), so no
-# OPENAI_API_KEY is required. The point of leaving the model unpinned is to avoid the
-# openai-agents footgun: that harness treats an unpinned model as a Databricks
-# model (see omnigent/inner/openai_agents_sdk_executor.py — `is_databricks_model
-# = model is None`) and silently routes an unpinned "GPT" head to ambient
-# Databricks credentials. codex-native has no such unpinned-model -> Databricks
-# default — absent a Databricks provider it uses the Codex CLI login. (Like any
-# harness, it WILL honor an explicitly-configured or ambient Databricks provider
-# if you have one set; it just never picks Databricks merely because the model
-# is unpinned.)
+# Why codex rather than openai-agents: the openai-agents harness treats an
+# unpinned model as a Databricks model (see
+# omnigent/inner/openai_agents_sdk_executor.py — `is_databricks_model =
+# model is None`) and, with no OPENAI_API_KEY/OPENAI_BASE_URL in the
+# environment, silently falls back to ambient Databricks credentials — routing
+# Debby's "GPT" head through the Databricks gateway instead of OpenAI. The
+# codex harness has no such unpinned-model Databricks fallback.
 executor:
   type: omnigent
   config:
-    harness: codex-native
-    # YOLO: headless workers can't answer approval prompts, so run Codex
-    # with full bypass. The server translates this into
-    # ``--dangerously-bypass-approvals-and-sandbox`` (native sub-agents only).
-    yolo: true
+    harness: codex
 
 # Declaring ``os_env`` registers the ``sys_os_read`` / ``sys_os_write`` /
 # ``sys_os_edit`` / ``sys_os_shell`` tools (filesystem access comes bundled with
@@ -62,9 +51,7 @@ prompt: |
   thinking-and-writing responder with filesystem access: use your `sys_os_*`
   tools to read any files you need as reference. Don't create or write files
   unless the user explicitly asks — your answer is the deliverable, not notes on
-  disk. You run on the real Codex CLI, so write and shell tools are present
-  even though you should not need them here; leave the workspace untouched. Your
-  substance is still your own reasoning.
+  disk. Your substance is still your own reasoning.
 
   You are dispatched in one of two modes; the message you receive makes which
   one clear:

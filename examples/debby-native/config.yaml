@@ -1,30 +1,38 @@
-# Debby — the two-headed brainstorming partner.
+# Debby-native — the two-headed brainstorming partner, on native terminals.
 #
-# Debby never answers from a single model. Every question she receives is
-# fanned out to BOTH a Claude sub-agent and a GPT sub-agent — two plain
-# (non-coding) responders running on the claude-sdk and codex
-# harnesses — and she shows you what each one thinks, side by side.
+# Same two-headed brainstorming agent as `examples/debby`, but the two heads
+# run on the native terminal harnesses instead of in-process: every question is
+# fanned out to BOTH a Claude sub-agent (claude-native, the real `claude` CLI)
+# and a GPT sub-agent (codex-native, the real `codex` CLI) — each an
+# openable/takeover terminal session in the Subagents panel, like Polly's
+# workers — and she shows you what each one thinks, side by side.
 #
 # Load the `debate` skill (highlighted as a chip on her empty surface) to
 # have the two partners critique each other's answers for a configurable
 # number of rounds before they converge.
 #
 # Usage:
-#   omnigent run examples/debby
+#   omnigent run examples/debby-native
 #
-# Debby's two heads run on the claude-sdk and codex harnesses, so
-# configure both a Claude and an OpenAI provider first (e.g. `omnigent setup`,
-# or export ANTHROPIC_API_KEY and OPENAI_API_KEY).
+# Deploy/setup: because the two heads launch the real `claude` and `codex`
+# CLIs, the machine needs both CLIs installed (plus Node.js and tmux) and
+# logged in. Each head authenticates through its CLI's own login/config — a
+# subscription (Claude Max / ChatGPT) OR an API key both work, whichever the
+# CLI is set up with; you do not need to export keys into omnigent's own
+# environment for the heads. (Debby-native's own brain still runs on the
+# claude-sdk harness, so a configured Claude provider from `omnigent setup`
+# covers it.)
 
 spec_version: 1
-name: debby
+name: debby-native
 description: >-
-  A two-headed brainstorming partner. Debby sends every question to both a
-  Claude and a GPT sub-agent and shows you both perspectives. With the
-  `debate` skill she has them critique each other for N rounds before
-  converging on a synthesis.
+  A two-headed brainstorming partner whose heads run on native terminal
+  harnesses. Debby-native sends every question to both a Claude (claude-native)
+  and a GPT (codex-native) sub-agent — each an openable/takeover terminal
+  session — and shows you both perspectives. With the `debate` skill she has
+  them critique each other for N rounds before converging on a synthesis.
 
-# Debby's "brain" runs on the Claude Agent SDK. She does no substantive
+# Debby-native's "brain" runs on the Claude Agent SDK. She does no substantive
 # thinking of her own on the user's question — she orchestrates the two
 # partners, lays out both views, and (under `debate`) runs the critique
 # loop and synthesizes. No model is pinned, so the claude-sdk harness runs on
@@ -40,9 +48,10 @@ executor:
 prompt: |
   You are Debby, a brainstorming partner with two heads. You never answer a
   question from a single model's point of view. You have exactly two plain
-  sub-agents — neither is a coding agent; each is a pure responder:
-  - `claude` — a Claude responder (claude-sdk harness).
-  - `gpt`    — a GPT responder (codex harness).
+  sub-agents — neither is a coding agent; each is a pure responder running on a
+  native terminal harness:
+  - `claude` — a Claude responder (Claude Code, claude-native harness).
+  - `gpt`    — a GPT responder (Codex, codex-native harness).
 
   ## Your default behavior — always fan out to both
 
@@ -141,8 +150,8 @@ guardrails:
 
 tools:
   # The two brainstorming partners — see agents/<name>/. Both reason and write,
-  # and each has its own filesystem access (`os_env`); claude runs on claude-sdk,
-  # gpt on codex.
+  # and each has its own filesystem access (`os_env`); claude runs on
+  # claude-native (Claude Code), gpt on codex-native (Codex).
   agents:
     - claude
     - gpt
