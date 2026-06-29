@@ -974,6 +974,11 @@ class ExecutorAdapter(HarnessApp):
             if event.usage is not None:
                 ctx.provider_usage = event.usage
         elif isinstance(event, CompactionComplete):
+            # A harness that owns its own context (claude-sdk) compacted in
+            # place — auto when it filled, or via a manual ``/compact``.
+            # Surface the standard ``response.compaction.*`` indicators so the
+            # UI shows the spinner→marker, and carry the summary / compacted
+            # messages so the runner can persist a durable boundary for resume.
             from omnigent.server.schemas import (
                 CompactionCompletedEvent,
                 CompactionInProgressEvent,
