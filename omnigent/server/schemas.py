@@ -3176,10 +3176,17 @@ class CompactionCompletedEvent(_SSEEventBase):
         update the context-ring immediately without waiting for the
         next ``response.completed`` usage report. ``None`` when
         token counting is unavailable.
+    :param summary: Text summary of the compacted conversation, when a
+        harness that owns its own context (e.g. claude-sdk) compacts in
+        place. Lets the runner persist a durable compaction boundary for
+        session resume. ``None`` for server-side AP compaction.
+    :param summary_model: Model that produced ``summary``, or ``None``.
     """
 
     type: Literal["response.compaction.completed"]
     total_tokens: int | None = None
+    summary: str | None = None
+    summary_model: str | None = None
 
 
 class CompactionFailedEvent(_SSEEventBase):

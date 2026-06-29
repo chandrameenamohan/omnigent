@@ -1056,6 +1056,56 @@ def test_translate_event_mcp_tool_call_request_emits_observed_with_bare_name() -
     )
 
 
+def test_translate_event_compaction_complete_emits_compaction_sse() -> None:
+    """
+    A ``CompactionComplete`` from a context-owning executor (claude-sdk)
+    surfaces the standard compaction indicators: ``in_progress`` then
+    ``completed``, with the completed event carrying the summary / model /
+    token count so the runner can relay them and persist a boundary.
+    """
+    from omnigent.inner.executor import CompactionComplete
+    from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter
+
+    adapter = ExecutorAdapter(executor_factory=lambda: _StubExecutor())
+    ctx = _RecordingTurnContext(response_id="resp_compact")
+
+    adapter._translate_event(  # type: ignore[arg-type]
+        CompactionComplete(summary="compacted summary", token_count=4321, model="claude-test"),
+        ctx,  # type: ignore[arg-type]
+    )
+
+    types = [e.type for e in ctx.emitted]
+    assert types == [
+        "response.compaction.in_progress",
+        "response.compaction.completed",
+    ], types
+    completed = ctx.emitted[1]
+    assert completed.total_tokens == 4321
+    assert completed.summary == "compacted summary"
+    assert completed.summary_model == "claude-test"
+
+
+def test_translate_event_compaction_complete_unmeasured_tokens_pass_none() -> None:
+    """A ``CompactionComplete`` with ``token_count=None`` relays ``None`` (not
+    0) so the client context ring holds its prior value instead of blinking to
+    0%."""
+    from omnigent.inner.executor import CompactionComplete
+    from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter
+
+    adapter = ExecutorAdapter(executor_factory=lambda: _StubExecutor())
+    ctx = _RecordingTurnContext(response_id="resp_compact_none")
+
+    adapter._translate_event(  # type: ignore[arg-type]
+        CompactionComplete(summary="", token_count=None, model=None),
+        ctx,  # type: ignore[arg-type]
+    )
+
+    completed = ctx.emitted[1]
+    assert completed.total_tokens is None
+    # Empty summary collapses to None so the runner skips an empty persist.
+    assert completed.summary is None
+
+
 def test_translate_event_mcp_request_queues_tool_use_id_for_dispatch() -> None:
     """
     A ``ToolCallRequest`` with an MCP-prefixed name pushes the

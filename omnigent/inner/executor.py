@@ -175,6 +175,35 @@ class TurnComplete(ExecutorEvent):
     usage: dict[str, Any] | None = None
 
 
+@dataclass
+class CompactionComplete(ExecutorEvent):
+    """Conversation history was compacted in place by the harness.
+
+    Emitted when an executor that owns its own context window (e.g. the
+    Claude SDK CLI) compacts that context — either automatically when it
+    fills, or via a manual ``/compact``. The runner surfaces the standard
+    ``response.compaction.*`` indicators and may persist the summary so a
+    resumed session can recover the pre-compaction boundary.
+
+    :param summary: Text summary of the compacted conversation.
+    :param token_count: Post-compaction context size in tokens, or ``None``
+        when no real measurement is available. ``None`` (not ``0``) must be
+        used for "unknown" so the client's context ring is NOT slammed to 0%
+        — it then holds the prior value and corrects on the next turn's usage,
+        matching the claude-native model (its compaction event carries no token
+        count; the next API call's usage updates the ring).
+    :param model: Model used for summarization, or None if truncation-based.
+    :param compacted_messages: The compacted message list that replaces the
+        pre-compaction history, stored by the runner so a resumed session can
+        recover the boundary; ``None`` when not captured.
+    """
+
+    summary: str = ""
+    token_count: int | None = None
+    model: str | None = None
+    compacted_messages: list[dict[str, Any]] | None = None
+
+
 class ToolCallStatus(str, enum.Enum):
     SUCCESS = "success"
     ERROR = "error"

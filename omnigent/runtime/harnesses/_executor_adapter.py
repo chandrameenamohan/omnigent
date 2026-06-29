@@ -46,6 +46,7 @@ from typing import Any
 from fastapi import Response
 
 from omnigent.inner.executor import (
+    CompactionComplete,
     Executor,
     ExecutorConfig,
     ExecutorError,
@@ -62,6 +63,8 @@ from omnigent.inner.tracing import TracingContext, is_tracing_enabled
 from omnigent.runtime.harnesses._scaffold import HarnessApp, PolicyVerdictPayload, TurnContext
 from omnigent.runtime.tool_output import cap_tool_output
 from omnigent.server.schemas import (
+    CompactionCompletedEvent,
+    CompactionInProgressEvent,
     CreateResponseRequest,
     ElicitationRequestParams,
     InjectionConsumedEvent,
@@ -934,6 +937,23 @@ class ExecutorAdapter(HarnessApp):
             # payload to populate TurnComplete.usage on the Omnigent side.
             if event.usage is not None:
                 ctx.provider_usage = event.usage
+        elif isinstance(event, CompactionComplete):
+            # A harness that owns its own context (claude-sdk) compacted in
+            # place — auto when it filled, or via a manual ``/compact``.
+            # Surface the standard ``response.compaction.*`` indicators so the
+            # UI shows the spinner→marker, and carry the summary so the runner
+            # can persist a durable compaction boundary for session resume.
+            ctx.emit(
+                CompactionInProgressEvent(type="response.compaction.in_progress"),
+            )
+            ctx.emit(
+                CompactionCompletedEvent(
+                    type="response.compaction.completed",
+                    total_tokens=event.token_count,
+                    summary=event.summary or None,
+                    summary_model=event.model,
+                ),
+            )
         # ExecutorError handled by the caller (re-raises so the
         # scaffold can build a response.failed terminal event).
 
