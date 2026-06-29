@@ -7782,11 +7782,21 @@ def create_runner_app(
                     # in_progress already covers the spinner) and persist a
                     # completed-with-summary. Frame on the SSE record boundary.
                     _buf = ""
+                    _drain = True
                     async for chunk in resp.aiter_text():
                         _buf += chunk
-                        while "\n\n" in _buf:
+                        while _drain and "\n\n" in _buf:
                             frame, _, _buf = _buf.partition("\n\n")
-                            if "response.compaction." not in frame:
+                            # Relay only compaction.* frames, but still inspect
+                            # terminal failure frames: a response.failed /
+                            # response.cancelled from the hidden turn means the
+                            # harness failed, so the backstop must resolve as
+                            # failed — not silently fall through to completed.
+                            if (
+                                "response.compaction." not in frame
+                                and "response.failed" not in frame
+                                and "response.cancelled" not in frame
+                            ):
                                 continue
                             for line in frame.splitlines():
                                 if not line.startswith("data:"):
@@ -7803,11 +7813,29 @@ def create_runner_app(
                                 elif _etype == "response.compaction.failed":
                                     _publish_event(conv_id, evt)
                                     _terminal_published = True
+                                elif _etype in ("response.failed", "response.cancelled"):
+                                    # Terminal harness/scaffold failure of the
+                                    # hidden turn. NOT relayed (the client only
+                                    # ever sees compaction.*), but compaction did
+                                    # not succeed: mark failed and stop draining
+                                    # so the finally backstop emits
+                                    # compaction.failed.
+                                    _failed = True
+                                    _drain = False
+                                    break
+                        if not _drain:
+                            break
                 _logger.info(
                     "claude-sdk /compact for %s: terminal_relayed=%s",
                     conv_id,
                     _terminal_published,
                 )
+            except asyncio.CancelledError:
+                # Teardown cancel after in_progress but before any terminal
+                # event: treat as failed so the backstop never reports a false
+                # completed. Re-raise so cancellation still propagates.
+                _failed = True
+                raise
             except Exception:
                 _failed = True
                 _logger.exception("claude-sdk /compact failed for %s", conv_id)

@@ -14209,3 +14209,77 @@ async def test_events_compact_on_claude_sdk_busy_turn_resolves_failed() -> None:
     assert "response.compaction.in_progress" in types, types
     assert "response.compaction.failed" in types, types
     assert "response.compaction.completed" not in types, types
+
+
+@pytest.mark.asyncio
+async def test_events_compact_on_claude_sdk_terminal_failure_resolves_failed() -> None:
+    """The hidden /compact turn streams 200 then a terminal ``response.failed``
+    (executor/scaffold failure) with NO compaction terminal event. The runner
+    must resolve the spinner as FAILED — never silently backstop to completed by
+    dropping the non-compaction failure frame."""
+    from omnigent.runner.app import _session_event_queues_ref
+    from omnigent.spec.types import ExecutorSpec
+
+    sdk_spec = AgentSpec(
+        spec_version=1,
+        name="t",
+        executor=ExecutorSpec(type="omnigent", config={"harness": "claude-sdk"}),
+    )
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        del agent_id, session_id
+        return sdk_spec
+
+    # 200 stream that emits a terminal harness failure and NO compaction
+    # terminal — the frame the buggy relay loop dropped, leaving the backstop
+    # to falsely report completed.
+    hc = _ScriptedHarnessClient(
+        [
+            _sse(
+                {
+                    "type": "response.failed",
+                    "session_id": "conv_sdk_fail",
+                    "error": {"message": "scaffold blew up"},
+                }
+            )
+        ]
+    )
+    pm = _FakeProcessManager(hc)
+    app = create_runner_app(
+        process_manager=pm,  # type: ignore[arg-type]
+        spec_resolver=_resolver,
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+    )
+
+    async with _runner_client(app) as client:
+        create_resp = await client.post(
+            "/v1/sessions",
+            json={"session_id": "conv_sdk_fail", "agent_id": "ag_1"},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        _drain_session_event_queue(_session_event_queues_ref.get("conv_sdk_fail"))
+
+        resp = await client.post(
+            "/v1/sessions/conv_sdk_fail/events",
+            json={"type": "compact"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        queue = _session_event_queues_ref.get("conv_sdk_fail")
+        got: list[dict[str, Any]] = []
+        for _ in range(500):
+            while queue is not None and not queue.empty():
+                item = queue.get_nowait()
+                if isinstance(item, dict):
+                    got.append(item)
+            if any(e.get("type") == "response.compaction.failed" for e in got):
+                break
+            await asyncio.sleep(0.01)
+
+    types = [e.get("type") for e in got]
+    assert "response.compaction.in_progress" in types, types
+    assert "response.compaction.failed" in types, types
+    assert "response.compaction.completed" not in types, types
+    # The raw harness failure frame is never relayed to the client — only
+    # compaction.* events reach the UI stream.
+    assert "response.failed" not in types, types
