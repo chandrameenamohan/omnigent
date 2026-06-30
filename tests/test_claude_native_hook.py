@@ -1736,6 +1736,7 @@ def test_evaluate_policy_pre_tool_use_fails_closed_when_verdict_unavailable(
     monkeypatch.setattr("omnigent.claude_native_bridge._TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr("omnigent.claude_native_bridge._BRIDGE_ROOT", tmp_path / "root")
     monkeypatch.setattr(claude_native_hook.httpx, "Client", make_failing_client(mode))
+    monkeypatch.setattr(native_policy_hook, "_EVALUATE_POLICY_RETRY_BUDGET_S", 0.0)
     bridge_dir = prepare_bridge_dir("conv_abc", bridge_id="bridge_shared", workspace=tmp_path)
     write_active_session_id(bridge_dir, "conv_active")
     build_hook_settings(bridge_dir, ap_server_url="http://127.0.0.1:8787")
@@ -1783,6 +1784,7 @@ def test_evaluate_policy_non_tool_call_phases_fail_open_on_error(
     monkeypatch.setattr("omnigent.claude_native_bridge._TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr("omnigent.claude_native_bridge._BRIDGE_ROOT", tmp_path / "root")
     monkeypatch.setattr(claude_native_hook.httpx, "Client", make_failing_client("connect_error"))
+    monkeypatch.setattr(native_policy_hook, "_EVALUATE_POLICY_RETRY_BUDGET_S", 0.0)
     bridge_dir = prepare_bridge_dir("conv_abc", bridge_id="bridge_shared", workspace=tmp_path)
     write_active_session_id(bridge_dir, "conv_active")
     build_hook_settings(bridge_dir, ap_server_url="http://127.0.0.1:8787")
@@ -1875,47 +1877,6 @@ def test_evaluate_policy_retries_5xx_and_succeeds(
     assert captured.out == ""
     # Two 503s then one 200 = 3 total attempts.
     assert call_count == 3
-
-
-def test_build_reauth_remints_and_preserves_routing_header(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """
-    ``_build_reauth`` re-mints the bearer and keeps the routing header.
-
-    The fresh token must be merged OVER the existing headers so the
-    ``X-Databricks-Org-Id`` workspace-routing header (which the Apps server
-    needs to avoid a 403 reroute to the account) is preserved, not dropped.
-    """
-    monkeypatch.setattr(
-        "omnigent.runner._entry._make_auth_token_factory",
-        lambda server_url=None: lambda: "fresh-token",
-    )
-    reauth = claude_native_hook._build_reauth(
-        "https://ap.example.com",
-        {"Authorization": "Bearer stale", "X-Databricks-Org-Id": "o9"},
-    )
-    assert reauth() == {"Authorization": "Bearer fresh-token", "X-Databricks-Org-Id": "o9"}
-
-
-def test_build_reauth_returns_none_without_factory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """
-    ``_build_reauth`` returns ``None`` when no refresh mechanism is available.
-
-    Local unauthenticated servers (no token factory) must not synthesize an
-    auth header; returning ``None`` lets the caller fall through to its normal
-    handling (which fails closed for a tool-call gate).
-    """
-    monkeypatch.setattr(
-        "omnigent.runner._entry._make_auth_token_factory",
-        lambda server_url=None: None,
-    )
-    reauth = claude_native_hook._build_reauth(
-        "https://ap.example.com", {"Authorization": "Bearer stale"}
-    )
-    assert reauth() is None
 
 
 def test_evaluate_policy_reauths_on_expired_token_instead_of_failing_closed(
