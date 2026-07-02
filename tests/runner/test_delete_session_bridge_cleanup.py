@@ -21,10 +21,10 @@ from fastapi import FastAPI
 from omnigent.antigravity_native_bridge import (
     bridge_dir_for_bridge_id as antigravity_bridge_dir,
 )
+from omnigent.claude_native_bridge import bridge_dir_for_bridge_id, prepare_bridge_dir
 from omnigent.claude_native_bridge import (
     bridge_dir_for_bridge_id as claude_bridge_dir,
 )
-from omnigent.claude_native_bridge import bridge_dir_for_bridge_id, prepare_bridge_dir
 from omnigent.codex_native_bridge import (
     bridge_dir_for_bridge_id as codex_bridge_dir,
 )

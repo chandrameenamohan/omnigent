@@ -6040,9 +6040,7 @@ async def _delete_native_bridge_dirs(
         )
 
     targets = {
-        antigravity_bridge_dir(
-            labels.get(ANTIGRAVITY_NATIVE_BRIDGE_ID_LABEL_KEY) or session_id
-        ),
+        antigravity_bridge_dir(labels.get(ANTIGRAVITY_NATIVE_BRIDGE_ID_LABEL_KEY) or session_id),
         antigravity_bridge_dir(session_id),
         claude_bridge_dir(labels.get(BRIDGE_ID_LABEL_KEY) or session_id),
         claude_bridge_dir(session_id),
