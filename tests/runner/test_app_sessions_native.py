@@ -226,7 +226,7 @@ class _FakeProcessManager:
         self.cancelled: list[str] = []
         self.get_client_calls: list[tuple[str, str, dict[str, str] | None]] = []
         # In-flight tracking the runner wires up on response.created /
-        # stream end (issue #1414). Recorded so tests can assert the
+        # stream end. Recorded so tests can assert the
         # idle reaper's guard is actually populated for a live turn.
         self.marked_in_flight: list[tuple[str, str]] = []
         self.cleared_in_flight: list[str] = []
@@ -3778,11 +3778,12 @@ async def test_auto_create_antigravity_wires_omnigent_mcp_relay(
     * the relay starter (``ensure_comment_relay``) is invoked for THIS session's
       bridge dir before launch, so its ``tool_relay.json`` is on disk when agy
       first scans the MCP server;
-    * the relay ``mcp_config.json`` is written into the per-session ISOLATED agy
-      HOME (``<bridge_dir>/agy-home/.gemini/config``), NOT the user's real
+    * the relay ``mcp_config.json`` is written into the per-session isolated agy
+      Gemini dir (``<bridge_dir>/agy-home/.gemini/config``), NOT the user's real
       ``~/.gemini`` — the config-scoping footgun the design avoids;
-    * the launch env carries ``HOME`` = that isolated home, so agy actually loads
-      the bridge-scoped config (and never the user's interactive agy config).
+    * the launch args carry ``--gemini_dir=<isolated .gemini>`` while the launch
+      env does not override ``HOME``, so agy keeps platform auth such as macOS
+      Keychain but loads the bridge-scoped config.
     """
     import omnigent.antigravity_native_bridge as bridge_mod
     import omnigent.antigravity_native_launch as launch_mod
@@ -3801,8 +3802,8 @@ async def test_auto_create_antigravity_wires_omnigent_mcp_relay(
     monkeypatch.setattr(runner_app_mod, "_terminal_tmux_pane", lambda *_a, **_k: (None, None))
     monkeypatch.setattr(rpc_mod, "_candidate_agy_rpc_ports", list)
 
-    # Capture the env build_agy_launch starts from so we can assert HOME is layered
-    # on top of it (the launch env is the captured spec's ``env`` below).
+    # Capture the env build_agy_launch starts from so we can assert it is preserved
+    # without a HOME override (the launch env is the captured spec's ``env`` below).
     monkeypatch.setattr(
         launch_mod, "build_agy_launch", lambda **_kwargs: (("agy",), {"AGY_ENV": "1"})
     )
@@ -3846,6 +3847,7 @@ async def test_auto_create_antigravity_wires_omnigent_mcp_relay(
             resource_role: str | None = None,
             **_kwargs: Any,
         ) -> SessionResourceView:
+            captured_spec["args"] = list(spec.args)
             captured_spec["env"] = dict(spec.env)
             return SessionResourceView(
                 id="terminal_antigravity_main",
@@ -3868,6 +3870,7 @@ async def test_auto_create_antigravity_wires_omnigent_mcp_relay(
 
     bridge_dir = bridge_mod.bridge_dir_for_bridge_id(session_id)
     iso_home = bridge_mod.agy_home_dir(bridge_dir)
+    iso_gemini = bridge_mod.agy_gemini_dir(bridge_dir)
 
     # 1) The relay starter was invoked for this session's bridge dir.
     assert len(relay_calls) == 1
@@ -3886,10 +3889,137 @@ async def test_auto_create_antigravity_wires_omnigent_mcp_relay(
     # The bridge token the shared relay needs was written into the bridge dir.
     assert (bridge_dir / "bridge.json").is_file()
 
-    # 3) The launch env carries HOME = the isolated home, layered over the
-    #    build_agy_launch base env.
-    assert captured_spec["env"]["HOME"] == str(iso_home)
+    # 3) The launch args point agy at the isolated Gemini dir, while HOME stays
+    #    real so platform auth such as macOS Keychain keeps working.
+    assert captured_spec["args"] == [f"--gemini_dir={iso_gemini}"]
+    assert "HOME" not in captured_spec["env"]
     assert captured_spec["env"]["AGY_ENV"] == "1"
+
+    # 4) The session workspace is pre-trusted AND the feedback survey is disabled
+    #    in the SAME isolated settings.json agy reads under --gemini_dir (#1598 +
+    #    #1494), proving the trust seed and the survey-disable compose in the
+    #    isolated dir without one clobbering the other (the rebase conflict point).
+    settings = iso_gemini / "antigravity-cli" / "settings.json"
+    assert settings.is_file()
+    settings_data = json.loads(settings.read_text(encoding="utf-8"))
+    workspace_key = str((tmp_path / "workspace").resolve())
+    assert workspace_key in settings_data.get("trustedWorkspaces", [])
+    assert settings_data.get("showFeedbackSurvey") is False
+
+
+@pytest.mark.asyncio
+async def test_auto_create_antigravity_prepends_gemini_dir_to_generated_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--gemini_dir`` is inserted right after the binary, ahead of every other flag.
+
+    The sibling relay-wiring test mocks ``build_agy_launch`` to emit no flags, so it
+    cannot prove the insertion does not corrupt the order of the REAL generated
+    flags (``--conversation``, ``--model``, ``--dangerously-skip-permissions``, and
+    pass-through ``extra_args``). agy global flags must precede any positional /
+    subcommand token, so ``--gemini_dir`` is prepended at index 0 and the rest of
+    argv is preserved verbatim. This guards that invariant against a future change
+    to the argv-composition line in ``_auto_create_antigravity_terminal``.
+    """
+    import omnigent.antigravity_native_bridge as bridge_mod
+    import omnigent.antigravity_native_launch as launch_mod
+    import omnigent.antigravity_native_reader as reader_mod
+    import omnigent.antigravity_native_rpc as rpc_mod
+    import omnigent.runner.app as runner_app_mod
+
+    session_id = "conv_agy_argv"
+    monkeypatch.setattr(bridge_mod, "_BRIDGE_ROOT", tmp_path / "antigravity-native")
+    monkeypatch.setenv("RUNNER_SERVER_URL", "http://ap.example")
+    monkeypatch.setenv("OMNIGENT_RUNNER_WORKSPACE", str(tmp_path / "workspace"))
+    (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
+    monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.setattr("omnigent.runner._entry._make_auth_token_factory", lambda: None)
+    monkeypatch.setattr(bridge_mod, "ensure_agy_onboarding_complete", lambda: None)
+    monkeypatch.setattr(runner_app_mod, "_terminal_tmux_pane", lambda *_a, **_k: (None, None))
+    monkeypatch.setattr(rpc_mod, "_candidate_agy_rpc_ports", list)
+
+    # A realistic build_agy_launch output: binary + a full set of generated flags.
+    # The argv-composition line must preserve these verbatim after the prepend.
+    generated_tail = [
+        "--conversation",
+        "abc-123",
+        "--model",
+        "gemini-2.5-pro",
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        "30",
+    ]
+    monkeypatch.setattr(
+        launch_mod,
+        "build_agy_launch",
+        lambda **_kwargs: (("agy", *generated_tail), {}),
+    )
+
+    def _noop_reader(*_args: Any, **_kwargs: Any) -> Any:
+        async def _runner() -> None:
+            await asyncio.Event().wait()
+
+        return _runner()
+
+    monkeypatch.setattr(reader_mod, "supervise_reader", _noop_reader)
+
+    async def _recording_relay(_session_id_arg: str, **_kwargs: Any) -> None:
+        return None
+
+    captured_spec: dict[str, Any] = {}
+    snapshot = {"workspace": str(tmp_path / "workspace")}
+
+    class _SnapshotServerClient:
+        async def get(self, url: str, **_kwargs: Any) -> httpx.Response:
+            assert url == f"/v1/sessions/{session_id}"
+            return httpx.Response(200, json=snapshot, request=httpx.Request("GET", url))
+
+        async def patch(self, url: str, *, json: dict[str, Any], **_kwargs: Any) -> httpx.Response:
+            del json
+            return httpx.Response(200, json={}, request=httpx.Request("PATCH", url))
+
+    class _FakeResourceRegistry:
+        terminal_registry = None
+
+        async def launch_required_terminal(
+            self,
+            session_id: str,
+            terminal_name: str,
+            session_key: str,
+            spec: Any,
+            *,
+            resource_role: str | None = None,
+            **_kwargs: Any,
+        ) -> SessionResourceView:
+            captured_spec["command"] = spec.command
+            captured_spec["args"] = list(spec.args)
+            return SessionResourceView(
+                id="terminal_antigravity_main",
+                type="terminal",
+                session_id=session_id,
+                name="Antigravity",
+            )
+
+    try:
+        await _auto_create_antigravity_terminal(
+            session_id,
+            cast(SessionResourceRegistry, _FakeResourceRegistry()),
+            lambda _sid, _event: None,
+            server_client=cast(httpx.AsyncClient, _SnapshotServerClient()),
+            ensure_comment_relay=_recording_relay,
+        )
+        await asyncio.sleep(0)
+    finally:
+        await runner_app_mod._cancel_auto_forwarder_task(session_id)
+
+    bridge_dir = bridge_mod.bridge_dir_for_bridge_id(session_id)
+    iso_gemini = bridge_mod.agy_gemini_dir(bridge_dir)
+
+    # The terminal command stays the agy binary; --gemini_dir leads the arg list and
+    # every generated flag follows in its original order (none dropped or reordered).
+    assert captured_spec["command"] == "agy"
+    assert captured_spec["args"] == [f"--gemini_dir={iso_gemini}", *generated_tail]
 
 
 @pytest.mark.parametrize("parent_host_id", ["host_parent", None])
@@ -12749,6 +12879,72 @@ async def test_events_model_change_on_native_session_types_slash_command(
 
 
 @pytest.mark.asyncio
+async def test_events_model_change_on_kiro_session_types_slash_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    POST ``/events`` ``{"type":"model_change","model":"claude-haiku-4.5"}`` on a
+    kiro-native session drives ``inject_model_command`` (which types
+    ``/model claude-haiku-4.5`` into the live kiro TUI).
+
+    Pins that the runner dispatch routes model_change to the kiro handler.
+    Mirrors ``test_events_model_change_on_native_session_types_slash_command``.
+    """
+    from omnigent.runner.app import _session_event_queues_ref
+    from omnigent.spec.types import ExecutorSpec
+
+    captured: list[Any] = []
+
+    def _fake_inject(bridge_dir: Any, *, model: str, timeout_s: float) -> None:
+        """Record the call and return without touching tmux."""
+        captured.append((bridge_dir, model, timeout_s))
+
+    monkeypatch.setattr(kiro_native_bridge, "inject_model_command", _fake_inject)
+
+    native_spec = AgentSpec(
+        spec_version=1,
+        name="t",
+        executor=ExecutorSpec(type="omnigent", config={"harness": "kiro-native"}),
+    )
+
+    async def _resolver(agent_id: str, session_id: str | None = None) -> AgentSpec:
+        """Return the kiro-native spec for any agent_id."""
+        del agent_id, session_id
+        return native_spec
+
+    pm = _FakeProcessManager(_ScriptedHarnessClient([]))
+    app = create_runner_app(
+        process_manager=pm,  # type: ignore[arg-type]
+        spec_resolver=_resolver,
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+    )
+
+    async with _runner_client(app) as client:
+        create_resp = await client.post(
+            "/v1/sessions",
+            json={"session_id": "conv_kiro_model", "agent_id": "ag_1"},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        # Drain kiro auto-create events so nothing below trips on them.
+        _drain_session_event_queue(_session_event_queues_ref.get("conv_kiro_model"))
+
+        resp = await client.post(
+            "/v1/sessions/conv_kiro_model/events",
+            json={"type": "model_change", "model": "claude-haiku-4.5"},
+        )
+
+    assert resp.status_code == 204, (
+        f"Kiro model_change must return 204 from /events; got {resp.status_code}: {resp.text}"
+    )
+    assert len(captured) == 1, (
+        f"Expected one inject_model_command call from kiro model_change, got {len(captured)}."
+    )
+    _bridge_dir, model, timeout_s = captured[0]
+    assert model == "claude-haiku-4.5"
+    assert timeout_s == 1.0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "model_value",
     # Claude Code has no slash form for "use spawn default", so
@@ -13413,6 +13609,11 @@ async def test_auto_create_kiro_terminal_launches_required_terminal_with_isolate
     async def _fake_supervise_kiro_permission_mirror(**kwargs: Any) -> None:
         permission_mirror_calls.append(kwargs)
 
+    relay_calls: list[dict[str, Any]] = []
+
+    async def _spy_ensure_relay(session_id: str, **kwargs: Any) -> None:
+        relay_calls.append({"session_id": session_id, **kwargs})
+
     monkeypatch.setattr(
         "omnigent.kiro_native_session_forwarder.supervise_kiro_session_forwarder",
         _fake_supervise_kiro_session_forwarder,
@@ -13468,6 +13669,7 @@ async def test_auto_create_kiro_terminal_launches_required_terminal_with_isolate
         _FakeResourceRegistry(),  # type: ignore[arg-type]
         lambda _sid, evt: published.append(evt),
         server_client=NullServerClient(),  # type: ignore[arg-type]
+        ensure_comment_relay=_spy_ensure_relay,
     )
     for _ in range(20):
         if forwarder_calls and permission_mirror_calls:
@@ -13510,6 +13712,96 @@ async def test_auto_create_kiro_terminal_launches_required_terminal_with_isolate
     assert permission_mirror_calls
     assert permission_mirror_calls[0]["base_url"] == "http://127.0.0.1:6767"
     assert permission_mirror_calls[0]["session_id"] == "conv_kiro"
+    # The Omnigent MCP tool relay is seeded for this session's bridge dir.
+    assert relay_calls == [
+        {
+            "session_id": "conv_kiro",
+            "explicit_bridge_dir": kiro_native_bridge.bridge_dir_for_session_id("conv_kiro"),
+            "await_notify": False,
+        }
+    ]
+    # And the Omnigent MCP server is declared in the workspace-scoped kiro config.
+    workspace_mcp = tmp_path / ".kiro" / "settings" / "mcp.json"
+    assert workspace_mcp.exists()
+    mcp_servers = json.loads(workspace_mcp.read_text())["mcpServers"]
+    assert "serve-mcp" in mcp_servers["omnigent"]["args"]
+
+
+@pytest.mark.asyncio
+async def test_auto_create_kiro_terminal_skips_mcp_wiring_without_relay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a comment-relay callback, the Omnigent MCP is NOT wired.
+
+    The workspace mcp.json write + relay seed are gated on ``server_client`` AND
+    ``ensure_comment_relay`` together, so serve-mcp never launches with no relay
+    to route calls back to. With ``ensure_comment_relay`` absent the gate must
+    short-circuit: no workspace ``mcp.json`` is written.
+    """
+    import omnigent.kiro_native as kiro_native
+
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:6767")
+    monkeypatch.setattr(kiro_native_bridge, "_BRIDGE_ROOT", tmp_path / "kiro-bridge")
+    monkeypatch.setattr(
+        kiro_native,
+        "resolve_kiro_executable",
+        lambda **_kwargs: "/usr/bin/kiro-cli",
+    )
+
+    async def _noop_supervise(**_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "omnigent.kiro_native_session_forwarder.supervise_kiro_session_forwarder",
+        _noop_supervise,
+    )
+    monkeypatch.setattr(
+        "omnigent.kiro_native_permissions.supervise_kiro_permission_mirror",
+        _noop_supervise,
+    )
+    mcp_writes: list[Any] = []
+    monkeypatch.setattr(
+        kiro_native_bridge,
+        "write_kiro_workspace_mcp_config",
+        lambda *args, **kwargs: mcp_writes.append((args, kwargs)),
+    )
+
+    async def _fake_launch_config(**_kwargs: Any) -> _KiroNativeLaunchConfig:
+        return _KiroNativeLaunchConfig(
+            workspace=tmp_path,
+            terminal_launch_args=["hello"],
+            external_session_id=None,
+        )
+
+    monkeypatch.setattr("omnigent.runner.app._kiro_native_launch_config", _fake_launch_config)
+
+    class _FakeResourceRegistry:
+        terminal_registry = None
+
+        async def launch_required_terminal(
+            self, *, session_id: str, **_kwargs: Any
+        ) -> SessionResourceView:
+            return SessionResourceView(
+                id="terminal_kiro_main",
+                type="terminal",
+                session_id=session_id,
+                name="kiro:main",
+                metadata={"terminal_name": "kiro", "session_key": "main", "running": True},
+            )
+
+    # No ``ensure_comment_relay`` argument -> the MCP wiring gate stays closed.
+    await _auto_create_kiro_terminal(
+        "conv_kiro_no_relay",
+        _FakeResourceRegistry(),  # type: ignore[arg-type]
+        lambda _sid, _evt: None,
+        server_client=NullServerClient(),  # type: ignore[arg-type]
+    )
+
+    assert mcp_writes == []
+    assert not (tmp_path / ".kiro" / "settings" / "mcp.json").exists()
 
 
 @pytest.mark.asyncio

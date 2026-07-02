@@ -1432,9 +1432,11 @@ async def test_forwarder_posts_idle_on_stop_and_ignores_user_prompt_submit(
     # The first (and only) status POST is the Stop → idle. A ``running``
     # arriving first would mean UserPromptSubmit is still wrongly mapped.
     assert request["path"] == "/v1/sessions/conv_abc/events"
+    # The Stop hook carries its authoritative background-shell count (0 here,
+    # no background tasks) so a finished shell clears the indicator.
     assert request["body"] == {
         "type": "external_session_status",
-        "data": {"status": "idle"},
+        "data": {"status": "idle", "background_task_count": 0},
     }
 
 
@@ -1600,7 +1602,7 @@ async def test_forwarder_ignores_subagent_stop_hook(
 
     assert first["body"] == {
         "type": "external_session_status",
-        "data": {"status": "idle"},
+        "data": {"status": "idle", "background_task_count": 0},
     }
 
 
@@ -6389,41 +6391,6 @@ async def test_compaction_in_progress_does_not_persist(tmp_path: Path) -> None:
     persist_mock.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_post_external_session_status_attaches_failure_reason() -> None:
-    """A failed status carries its reason as ``output`` in the payload (#1113).
-
-    The server's ``external_session_status`` handler surfaces a failed edge's
-    ``output`` as the session's failure detail, so threading the forwarder's
-    drop reason there makes the UI render it instead of a bare "failed".
-    """
-    captured: list[dict[str, Any]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/v1/sessions/conv_x/events":
-            captured.append(json.loads(request.content))
-            return httpx.Response(204)
-        return httpx.Response(404)
-
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ap") as client:
-        await forwarder._post_external_session_status(
-            client,
-            session_id="conv_x",
-            status="failed",
-            output="transcript item item-1 rejected",
-        )
-        # No reason → no output field (e.g. a normal idle edge).
-        await forwarder._post_external_session_status(client, session_id="conv_x", status="idle")
-
-    assert captured[0]["type"] == "external_session_status"
-    assert captured[0]["data"] == {
-        "status": "failed",
-        "output": "transcript item item-1 rejected",
-    }
-    assert captured[1]["data"] == {"status": "idle"}
-
-
 def test_forward_failures_escalate_to_degraded_once() -> None:
     """
     Sustained forward failures flip the degraded latch exactly once (#1120).
@@ -6629,3 +6596,71 @@ async def test_subagent_start_drop_writes_dead_letter(tmp_path: Path) -> None:
     assert record["event_type"] == "external_subagent_start"
     assert record["payload"]["subagent_id"] == "dlstart1"
     assert record["payload"]["agent_type"] == "Explore"
+
+
+@pytest.mark.asyncio
+async def test_forwarder_posts_waiting_when_stop_has_background_tasks(
+    tmp_path: Path,
+) -> None:
+    """
+    ``Stop`` with ``background_tasks`` → ``waiting`` instead of ``idle``.
+
+    When Claude Code's Stop hook carries a non-empty ``background_tasks``
+    array (shells still running), the forwarder must publish ``waiting``
+    so the web UI keeps showing the spinner. Without this, the chat
+    interface shows "idle" while the terminal shows "1 shell running".
+    """
+    bridge_dir = tmp_path / "bridge"
+    transcript_path = tmp_path / "session.jsonl"
+    transcript_path.write_text("", encoding="utf-8")
+    record_hook_event(
+        bridge_dir,
+        {
+            "hook_event_name": "SessionStart",
+            "session_id": "claude-session",
+            "transcript_path": str(transcript_path),
+        },
+    )
+    record_hook_event(
+        bridge_dir,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "claude-session",
+            "background_tasks": [
+                {
+                    "id": "abc123",
+                    "type": "shell",
+                    "status": "running",
+                    "description": "Wait for CI",
+                    "command": "sleep 120",
+                },
+            ],
+        },
+    )
+    server, thread, base_url = _start_recording_server()
+    task = asyncio.create_task(
+        forward_claude_transcript_to_session(
+            base_url=base_url,
+            headers={},
+            session_id="conv_abc",
+            bridge_dir=bridge_dir,
+            agent_name="claude-native-ui",
+            start_at_end=False,
+            poll_interval_s=0.01,
+        )
+    )
+    try:
+        request = await _get_recorded_request(server)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+    assert request["path"] == "/v1/sessions/conv_abc/events"
+    assert request["body"] == {
+        "type": "external_session_status",
+        "data": {"status": "waiting", "background_task_count": 1},
+    }

@@ -1082,25 +1082,43 @@ class HarnessProcessManager:
         Close the httpx client, terminate the subprocess, and
         remove its socket file.
 
+        Teardown is best-effort and ordered so the process kill — the
+        step that actually reclaims the OS resource — always runs even
+        if an earlier step raises. ``release`` has already popped the
+        entry from ``_entries`` before calling this, so a bare
+        ``client.aclose()`` raise (a broken transport, a wedged client)
+        that skipped the kill would otherwise leak an *un-tracked*
+        subprocess. ``CancelledError`` (a ``BaseException``, not
+        ``Exception``) still propagates, so shutdown cancellation is
+        unaffected.
+
         :param entry: The bookkeeping record to tear down.
         """
-        await entry.client.aclose()
-        if entry.process.returncode is None:
-            try:
-                entry.process.send_signal(signal.SIGTERM)
-                await asyncio.wait_for(entry.process.wait(), timeout=_RELEASE_GRACE_S)
-            except asyncio.TimeoutError:
-                # Wedged subprocess — kill outright. The harness
-                # author is responsible for clean SIGTERM handling
-                # if they want graceful shutdown of in-flight
-                # responses.
-                entry.process.kill()
-                await entry.process.wait()
-        close_subprocess_transport(entry.process)
-        # Best-effort socket cleanup. uvicorn's atexit usually
-        # handles this when SIGTERM lands cleanly, but a
-        # hard-killed runner won't. No-op for TCP endpoints.
-        entry.endpoint.cleanup()
+        try:
+            await entry.client.aclose()
+        except Exception:
+            # A broken transport must not skip the subprocess kill below.
+            _logger.exception("error closing harness client during teardown; continuing")
+        finally:
+            if entry.process.returncode is None:
+                try:
+                    entry.process.send_signal(signal.SIGTERM)
+                    await asyncio.wait_for(entry.process.wait(), timeout=_RELEASE_GRACE_S)
+                except Exception:
+                    # Graceful SIGTERM didn't complete — it timed out, or
+                    # send_signal/wait raised (e.g. the process vanished
+                    # mid-teardown). Force-kill best-effort; a process that
+                    # is already gone is already done.
+                    with contextlib.suppress(Exception):
+                        entry.process.kill()
+                        await entry.process.wait()
+            with contextlib.suppress(Exception):
+                close_subprocess_transport(entry.process)
+            # Best-effort socket cleanup. uvicorn's atexit usually
+            # handles this when SIGTERM lands cleanly, but a
+            # hard-killed runner won't. No-op for TCP endpoints.
+            with contextlib.suppress(Exception):
+                entry.endpoint.cleanup()
 
     async def _idle_reaper_loop(self) -> None:
         """
@@ -1169,7 +1187,22 @@ class HarnessProcessManager:
                     "reaping idle harness subprocess for conversation %s",
                     conv_id,
                 )
-                await self.release(conv_id)
+                try:
+                    await self.release(conv_id)
+                except Exception:
+                    # A release failure (e.g. ``client.aclose()`` on a broken
+                    # transport, or ``process.wait()`` raising) must not escape
+                    # the loop: an unguarded raise here exits the reaper task
+                    # permanently — and silently, since nothing awaits it — so
+                    # the instance never reclaims another idle subprocess for
+                    # the rest of its lifetime (FD / memory / socket leak). Log
+                    # and continue; the entry stays registered and is retried
+                    # on a later pass.
+                    _logger.exception(
+                        "failed to reap idle harness subprocess for "
+                        "conversation %s; will retry on a later pass",
+                        conv_id,
+                    )
 
     async def _sweep_orphans(self) -> None:
         """

@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from omnigent._platform import IS_WINDOWS
 from omnigent.inner import _proc
 from omnigent.runner.transports.ws_tunnel.serve import RUNNER_TUNNEL_REJECTION_PREFIX
+from omnigent.version import VERSION
 
 if TYPE_CHECKING:
     from omnigent.runner.app import ResolvedSpec
@@ -33,7 +34,9 @@ if TYPE_CHECKING:
 
 _RUNNER_SERVER_URL_ENV_VAR = "RUNNER_SERVER_URL"
 _RUNNER_PREWARM_SPEC_PATH_ENV_VAR = "RUNNER_PREWARM_SPEC_PATH"
-_RUNNER_VERSION = "0.1.0"
+# The runner advertises the omnigent version it is actually running (shared
+# with the CLI/server/host) instead of a hard-coded placeholder.
+_RUNNER_VERSION = VERSION
 _RUNNER_CONFIG_HOME_ENV_VAR = "OMNIGENT_CONFIG_HOME"
 _DEFAULT_RUNNER_IDLE_TIMEOUT_S = 60 * 60
 _RUNNER_IDLE_MONITOR_MAX_POLL_INTERVAL_S = 60.0
@@ -840,12 +843,19 @@ def create_app(
                 )
             except Exception:
                 _logger.exception("runner MCP prewarm failed for %s", prewarm_path)
+        # Native-pane idle reaper (#1349): reclaims idle native CLI panes.
+        _pane_reaper = getattr(app.state, "native_pane_reaper", None)
+        if _pane_reaper is not None:
+            await _pane_reaper.start()
 
     async def _stop_pm() -> None:
         """Stop runner-owned resources for graceful process exit.
 
         :returns: None.
         """
+        _pane_reaper = getattr(app.state, "native_pane_reaper", None)
+        if _pane_reaper is not None:
+            await _pane_reaper.shutdown()
         await pm.shutdown()
         await _terminal_registry.shutdown()
         if mcp_manager is not None:
@@ -892,7 +902,7 @@ async def _run_tunnel_from_env() -> None:
     try:
         from omnigent.runtime import telemetry
 
-        telemetry.init()
+        telemetry.init("omni-runner")
     except Exception:  # noqa: BLE001 — best-effort; tracing failure must not crash the runner
         _logger.debug("telemetry init failed in runner", exc_info=True)
 

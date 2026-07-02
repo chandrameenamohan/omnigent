@@ -7,10 +7,16 @@ import { useApproveHotkey } from "@/hooks/useApproveHotkey";
 import { useSidebarToggleHotkeys } from "@/hooks/useSidebarToggleHotkeys";
 import { AgentInfoContent, agentHasInfo } from "@/components/AgentInfo";
 import { useIdleNotifications } from "@/hooks/useIdleNotifications";
+import { useSeedReadState } from "@/hooks/useUnseenConversations";
 import { useIOSViewportLock } from "@/hooks/useIOSViewportLock";
 import { readFilesPanelPreferences, writeFilesPanelPreferences } from "@/lib/filesPanelPreferences";
 import { derivePermissionLevel, isOwnerLevel } from "@/lib/permissionsApi";
-import { isIOSShell, isMacElectronShell, onNativeSidebarDrag } from "@/lib/nativeBridge";
+import {
+  isAndroidShell,
+  isIOSShell,
+  isMacElectronShell,
+  onNativeSidebarDrag,
+} from "@/lib/nativeBridge";
 import { readSessionWorkspaceState, writeSessionWorkspaceState } from "@/lib/sessionWorkspaceState";
 import {
   Dialog,
@@ -254,6 +260,16 @@ export function AppShell() {
   // the active conversation id, which suppresses the notification/badge for
   // the session the user is actively viewing.
   useIdleNotifications(conversationId);
+  // Seed the per-user read-state (unread/seen) mirror from the conversation
+  // list, so the sidebar dots reflect what the user did on any device.
+  // `undefined` while the query is still loading (vs `[]` for a loaded-but-
+  // empty list) so the seed — and the `hydrated` gate it flips — waits for
+  // the real read-state, not the transient empty list on a deep-link/reload.
+  const allConversations = useMemo(
+    () => conversationsData?.pages.flatMap((p) => p.data),
+    [conversationsData],
+  );
+  useSeedReadState(allConversations);
   const activeConv = useMemo(() => {
     if (!conversationId) return null;
     return (
@@ -1046,6 +1062,7 @@ export function AppShell() {
             className="app-shell relative flex h-dvh bg-sidebar text-foreground"
             data-electron-mac={isMacElectronShell() ? "true" : undefined}
             data-ios-native={isIOSShell() ? "true" : undefined}
+            data-android-native={isAndroidShell() ? "true" : undefined}
           >
             {/* Frameless-window titlebar stand-in (macOS Electron only): the
           sidebar's electron top margin (see index.css) frees this strip of
@@ -1310,11 +1327,7 @@ export function AppShell() {
                     Tools and policies configured for the active agent.
                   </DialogDescription>
                 </DialogHeader>
-                <AgentInfoContent
-                  agent={boundAgent}
-                  sessionId={conversationId}
-                  showIntelligentRouting
-                />
+                <AgentInfoContent agent={boundAgent} sessionId={conversationId} />
               </DialogContent>
             </Dialog>
           )}

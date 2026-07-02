@@ -17,7 +17,11 @@ from typing import Any
 
 import httpx
 
-from omnigent._native_post_delivery import append_dead_letter, post_may_have_been_delivered
+from omnigent._native_post_delivery import (
+    append_dead_letter,
+    post_external_session_status,
+    post_may_have_been_delivered,
+)
 from omnigent.claude_native_bridge import (
     BRIDGE_ID_LABEL_KEY,
     ClaudeHookRecord,
@@ -1536,7 +1540,7 @@ async def _forward_available_subagents(
             retry_key = f"subagent_status:{entry.child_conversation_id}"
             if status_retry_tracker.retry_delay_s(retry_key) is None:
                 try:
-                    await _post_external_session_status(
+                    await post_external_session_status(
                         client,
                         session_id=entry.child_conversation_id,
                         status=desired_status,
@@ -2694,11 +2698,21 @@ async def _forward_available_status_events(
         retry_key = f"hook:{record.event_cursor}:{record.byte_offset}:{status}"
         if retry_tracker.retry_delay_s(retry_key) is not None:
             return durable
+        effective_status = status
+        if status == "idle" and record.background_task_count > 0:
+            effective_status = "waiting"
         try:
-            await _post_external_session_status(
+            await post_external_session_status(
                 client,
                 session_id=session_id,
-                status=status,
+                status=effective_status,
+                # Only the ``Stop`` (idle/waiting) edge carries an authoritative
+                # background-shell count — ``0`` clears the tally, ``N`` sets it.
+                # ``StopFailure`` (failed) clears it on the server regardless, so
+                # leave its count off the wire.
+                background_task_count=(
+                    None if status == "failed" else record.background_task_count
+                ),
             )
         except httpx.HTTPError as exc:
             decision = retry_tracker.record_failure(retry_key, exc)
@@ -3354,18 +3368,32 @@ async def _post_external_conversation_item(
     :returns: None.
     :raises httpx.HTTPError: If the Omnigent request fails or is rejected.
     """
-    resp = await client.post(
-        f"/v1/sessions/{session_id}/events",
-        json={
-            "type": "external_conversation_item",
-            "data": {
-                "item_type": item.item_type,
-                "item_data": item.data,
-                "response_id": item.response_id,
+    from omnigent.runtime import telemetry
+
+    # The forwarder is the decoupled response path (it tails Claude's
+    # transcript and re-POSTs items under its own trace, not the request's).
+    # session_scope binds the session generically (the processor stamps
+    # session.id on this span and any other span in the forward); response_id
+    # is per-item, so it's set explicitly.
+    with (
+        telemetry.session_scope(session_id),
+        telemetry.span(
+            "claude_native.forward",
+            attributes={"omnigent.response_id": item.response_id},
+        ),
+    ):
+        resp = await client.post(
+            f"/v1/sessions/{session_id}/events",
+            json={
+                "type": "external_conversation_item",
+                "data": {
+                    "item_type": item.item_type,
+                    "item_data": item.data,
+                    "response_id": item.response_id,
+                },
             },
-        },
-    )
-    resp.raise_for_status()
+        )
+        resp.raise_for_status()
 
 
 async def _post_external_output_text_delta(
@@ -3671,40 +3699,6 @@ async def _forward_model_from_status(
     )
 
 
-async def _post_external_session_status(
-    client: httpx.AsyncClient,
-    *,
-    session_id: str,
-    status: str,
-    output: str | None = None,
-) -> None:
-    """
-    Post one ``external_session_status`` event to the Sessions API.
-
-    :param client: Omnigent HTTP client.
-    :param session_id: Omnigent session/conversation id.
-    :param status: Session status value, e.g. ``"idle"`` or
-        ``"failed"``.
-    :param output: Optional text attached to the event ``data``. On a
-        ``"failed"`` edge the server surfaces it as the session's failure
-        reason (``last_task_error``) so the UI renders a detail instead of
-        a bare "failed" (#1113). Ignored when falsy.
-    :returns: None.
-    :raises httpx.HTTPError: If the Omnigent request fails or is rejected.
-    """
-    data: dict[str, Any] = {"status": status}
-    if output:
-        data["output"] = output
-    resp = await client.post(
-        f"/v1/sessions/{session_id}/events",
-        json={
-            "type": "external_session_status",
-            "data": data,
-        },
-    )
-    resp.raise_for_status()
-
-
 async def _post_external_compaction_status(
     client: httpx.AsyncClient,
     *,
@@ -3906,7 +3900,7 @@ async def _post_forwarder_failed_status(
     :returns: None.
     """
     try:
-        await _post_external_session_status(
+        await post_external_session_status(
             client, session_id=session_id, status="failed", output=reason
         )
     except httpx.HTTPError:

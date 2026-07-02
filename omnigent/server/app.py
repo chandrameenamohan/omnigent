@@ -84,83 +84,15 @@ from omnigent.stores.policy_store import PolicyStore
 _logger = logging.getLogger(__name__)
 
 
-def _is_pep440_version(version: str) -> bool:
-    """Return whether *version* can be parsed as a PEP 440 version."""
-    from packaging.version import InvalidVersion, Version
-
-    try:
-        Version(version)
-    except InvalidVersion:
-        return False
-    return True
-
-
-def _metadata_omnigent_version() -> str:
-    """Return the omnigent version recorded in installed package metadata."""
-    from importlib.metadata import version as _pkg_version
-
-    return _pkg_version("omnigent")
-
-
-def _source_pyproject_version(start: Path | None = None) -> str | None:
-    """Return ``[project].version`` from a source checkout's ``pyproject.toml``."""
-    import tomllib
-
-    current = start or Path(__file__).resolve()
-    for parent in (current, *current.parents):
-        pyproject = parent / "pyproject.toml"
-        if not pyproject.is_file():
-            continue
-        try:
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
-            _logger.warning(
-                "could not read %s for server version fallback (%s)",
-                pyproject,
-                exc,
-            )
-            return None
-        project = data.get("project")
-        if not isinstance(project, dict) or project.get("name") != "omnigent":
-            continue
-        version = project.get("version")
-        if not isinstance(version, str) or not version:
-            return None
-        if not _is_pep440_version(version):
-            _logger.warning(
-                "pyproject version %r from %s is not PEP 440",
-                version,
-                pyproject,
-            )
-            return None
-        return version
-    return None
-
-
 def _server_version() -> str:
     """Return the server version exposed to clients.
 
-    Source/editable installs can have placeholder package metadata such as
-    ``source``. Prefer the installed metadata when it is parseable, but fall
-    back to the source checkout's ``pyproject.toml`` version so local developer
-    servers still report a PEP 440 version.
+    Reads :data:`omnigent.version.VERSION`, the single source of truth shared
+    with the CLI and the host/runner hello frames.
     """
-    version = _metadata_omnigent_version()
-    if _is_pep440_version(version):
-        return version
-    fallback = _source_pyproject_version()
-    if fallback is not None:
-        _logger.info(
-            "installed omnigent version %r is not PEP 440; using pyproject version %s",
-            version,
-            fallback,
-        )
-        return fallback
-    _logger.warning(
-        "installed omnigent version %r is not PEP 440 and no pyproject fallback was found",
-        version,
-    )
-    return version
+    from omnigent.version import VERSION
+
+    return VERSION
 
 
 def _register_web_mimetypes() -> None:
@@ -182,13 +114,23 @@ def _register_web_mimetypes() -> None:
         (".map", "application/json"),
         (".wasm", "application/wasm"),
         (".svg", "image/svg+xml"),
+        # Python's mimetypes DB has no ``.webmanifest`` entry, so without this
+        # Starlette serves the PWA manifest as ``application/octet-stream`` and
+        # browsers silently refuse to install the app.
+        (".webmanifest", "application/manifest+json"),
     ):
         mimetypes.add_type(ctype, ext)
 
 
 _register_web_mimetypes()
 
-_WEB_UI_DIST = Path(__file__).parent / "static" / "web-ui"
+# Default: the SPA bundled into the installed wheel's package data. A deploy
+# that ships the SPA outside the wheel (e.g. as loose files in the app source
+# tree, to keep the wheel under a per-file size cap) can point here instead via
+# OMNIGENT_WEB_UI_DIST, without rebuilding or repackaging.
+_WEB_UI_DIST = Path(
+    os.environ.get("OMNIGENT_WEB_UI_DIST") or (Path(__file__).parent / "static" / "web-ui")
+)
 _WEB_UI_HTML_CACHE_CONTROL = "no-cache"
 _WEB_UI_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 _WEB_UI_STATIC_CACHE_CONTROL = "public, max-age=3600"
@@ -2112,6 +2054,26 @@ def create_app(
                 conversation_store,
             )
 
+    def _resolve_managed_runner_owner(runner_id: str) -> str | None:
+        """Owner for a server-managed sandbox runner, by its bound session.
+
+        Managed runners authenticate with a server-minted binding token,
+        not a user session, so the runner tunnel cannot resolve their
+        owner from the handshake. The server wrote ``runner_id`` onto the
+        session row at launch (``replace_runner_id``), so the bound
+        conversation's owner is authoritative — the runner-side analog of
+        the host tunnel's ``resolve_launch_token``.
+
+        :param runner_id: Token-bound runner id from the tunnel handshake.
+        :returns: The session owner's user id, or ``None`` when no session
+            is bound to this runner (the handshake is then refused).
+        """
+        for conv in conversation_store.list_conversations_by_runner_id(runner_id):
+            owner = conversation_store.get_session_owner(conv.id)
+            if owner is not None:
+                return owner
+        return None
+
     # WS tunnel endpoint for runners (RUNNER.md §2-3).
     app.include_router(
         create_runner_tunnel_router(
@@ -2121,6 +2083,7 @@ def create_app(
             on_runner_connect=_on_runner_connect,
             auth_provider=auth_provider,
             runner_exit_reports=runner_exit_reports,
+            resolve_managed_runner_owner=_resolve_managed_runner_owner,
         ),
         prefix="/v1",
         tags=["runners"],
@@ -2407,6 +2370,11 @@ def _apply_web_ui_cache_headers(response: Response, path: str) -> Response:
     media_type = content_type.partition(";")[0].lower() if content_type is not None else None
     if path.startswith("assets/"):
         response.headers["Cache-Control"] = _WEB_UI_ASSET_CACHE_CONTROL
+    elif path in {"sw.js", "version.json"}:
+        # The service worker and the version sentinel it precaches must
+        # revalidate on every load, or the HTTP cache could mask a deploy for up
+        # to an hour and defeat prompt-to-reload.
+        response.headers["Cache-Control"] = _WEB_UI_HTML_CACHE_CONTROL
     elif media_type == "text/html" or path in {"", ".", "index.html"}:
         response.headers["Cache-Control"] = _WEB_UI_HTML_CACHE_CONTROL
     else:

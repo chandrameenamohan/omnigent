@@ -23,7 +23,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { AgentInfoButton } from "@/components/AgentInfo";
 import { PresenceAvatars } from "@/components/PresenceAvatars";
-import { HostBadge } from "@/components/HostBadge";
 import type { Agent } from "@/hooks/useAgents";
 import { cn } from "@/lib/utils";
 import { TAB_BADGE_BASE } from "./railTabs";
@@ -178,7 +177,7 @@ export function ChatHeader({
       className={cn(
         // h-14 fixes the bar at 56px: 12px symmetric vertical padding around
         // the 32px controls. No own background — the app canvas shows
-        // through (a scrim can't track the canvas gradient; see #3010).
+        // through (a scrim can't track the canvas gradient).
         // Scrolled chat text can't render through the controls because the
         // conversation viewport fades its top edge instead (chat-scroll-fade
         // in index.css, applied in ChatPage).
@@ -215,7 +214,6 @@ export function ChatHeader({
             <TooltipContent side="bottom">Open sidebar</TooltipContent>
           </Tooltip>
         )}
-        {!isChildSession && conversationId && <HostBadge sessionId={conversationId} />}
         {isChildSession && parentSessionId && (
           <>
             {/* Back affordance. Ghost (not a filled pill) so it sits on the
@@ -272,9 +270,7 @@ export function ChatHeader({
             "Fork from here" action on assistant bubbles (ChatPage). */}
         {/* Agent info: tools & policies for the bound agent. Desktop-only
             popover; self-hides when the agent has neither configured. */}
-        {conversationId && (
-          <AgentInfoButton agent={boundAgent} sessionId={conversationId} showIntelligentRouting />
-        )}
+        {conversationId && <AgentInfoButton agent={boundAgent} sessionId={conversationId} />}
         {/* Mobile-only three-dot menu folding the action buttons above
             (Share · Agent info) so the header stays
             uncluttered on a phone. The right-panel/rail control is

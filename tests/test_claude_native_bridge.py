@@ -369,6 +369,37 @@ def test_trusted_parent_accepts_qwen_native_bridge_dir(
     assert trusted == claude_native_bridge._absolute_syntactic_path(qwen_root.parent.parent)
 
 
+def test_trusted_parent_accepts_kiro_native_bridge_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The relay's bridge-root allowlist accepts kiro-native bridge dirs.
+
+    kiro-native reuses the shared ``serve-mcp`` / relay infrastructure but keeps
+    files under its own root (``$TMPDIR/omnigent-<uid>/kiro-native``). Without the
+    kiro branch, ``start_tool_relay`` -> ``_ensure_secure_dir`` ->
+    ``_trusted_parent_for_bridge_dir`` raises ``not under an allowed bridge root``
+    and the relay (and serve-mcp's own ``server.json`` write) never start. This
+    pins the kiro-native branch.
+    """
+    from omnigent import kiro_native_bridge
+
+    # Distinct claude root so the kiro target can't match the claude branch
+    # first (the autouse fixture points the claude root at ``tmp_path``).
+    monkeypatch.setattr("omnigent.claude_native_bridge._BRIDGE_ROOT", tmp_path / "claude-native")
+    monkeypatch.setattr("omnigent.claude_native_bridge._TRUSTED_PARENT", tmp_path)
+    # kiro root mirrors production shape: <uid-scoped temp>/kiro-native.
+    kiro_root = tmp_path / "omnigent-test" / "kiro-native"
+    monkeypatch.setattr(kiro_native_bridge, "_BRIDGE_ROOT", kiro_root)
+
+    target = claude_native_bridge._absolute_syntactic_path(kiro_root / "abc123")
+    trusted = claude_native_bridge._trusted_parent_for_bridge_dir(target)
+
+    # Same anchor as cursor-native: the uid-scoped temp dir's parent.
+    assert trusted == claude_native_bridge._absolute_syntactic_path(kiro_root.parent.parent)
+
+
 def test_trusted_parent_rejects_path_outside_all_roots_and_names_qwen(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5208,3 +5239,113 @@ def test_wait_for_claude_prompt_ready_surfaces_terminal_output_on_timeout(
     assert "did not become ready" in message
     assert "Last terminal output:" in message
     assert "JSON Parse error: Unrecognized token '<'" in message
+
+
+# ── _hook_record_from_jsonl_record: background_task_count ────────────────────
+
+
+def test_hook_record_parses_stop_background_tasks() -> None:
+    """
+    ``Stop`` with ``background_tasks`` → ``background_task_count`` is set.
+
+    Claude Code fires the Stop hook with a ``background_tasks`` array when
+    shells are still running. The forwarder uses the count to decide whether
+    to publish ``waiting`` instead of ``idle``.
+    """
+    record = _hook_record_from_jsonl_record(
+        _make_jsonl_record(
+            {
+                "hook_event_name": "Stop",
+                "background_tasks": [
+                    {
+                        "id": "abc123",
+                        "type": "shell",
+                        "status": "running",
+                        "description": "Wait for CI",
+                        "command": "sleep 120",
+                    },
+                    {
+                        "id": "def456",
+                        "type": "shell",
+                        "status": "running",
+                        "description": "Build check",
+                        "command": "make build",
+                    },
+                ],
+            }
+        )
+    )
+    assert record.event_name == "Stop"
+    assert record.background_task_count == 2
+
+
+def test_hook_record_stop_counts_only_running_background_tasks() -> None:
+    """Terminal-status entries are excluded so a finished shell can't over-count.
+
+    Claude Code retains finished/stopped shells in the ``background_tasks``
+    array (claude-code #67895/#59456/#14049). Counting the raw length would
+    keep the "N background tasks still running" indicator lit after they exit,
+    so only non-terminal entries are counted — and an unknown/absent status
+    counts as running so a genuinely-live shell is never dropped.
+    """
+    record = _hook_record_from_jsonl_record(
+        _make_jsonl_record(
+            {
+                "hook_event_name": "Stop",
+                "background_tasks": [
+                    {"id": "a", "type": "shell", "status": "running"},
+                    {"id": "b", "type": "shell", "status": "completed"},
+                    {"id": "c", "type": "shell", "status": "failed"},
+                    {"id": "d", "type": "shell", "status": "stopped"},
+                    {"id": "e", "type": "shell", "status": "killed"},
+                    # Unknown and absent statuses count as live (conservative —
+                    # never under-count and re-hide a running shell).
+                    {"id": "f", "type": "shell", "status": "queued"},
+                    {"id": "g", "type": "shell"},
+                ],
+            }
+        )
+    )
+    assert record.event_name == "Stop"
+    # running + queued + no-status = 3; completed/failed/stopped/killed excluded.
+    assert record.background_task_count == 3
+
+
+def test_hook_record_stop_all_background_tasks_terminal_counts_zero() -> None:
+    """Every shell finished → count is 0, dropping the indicator."""
+    record = _hook_record_from_jsonl_record(
+        _make_jsonl_record(
+            {
+                "hook_event_name": "Stop",
+                "background_tasks": [
+                    {"id": "a", "type": "shell", "status": "completed"},
+                    {"id": "b", "type": "shell", "status": "killed"},
+                ],
+            }
+        )
+    )
+    assert record.background_task_count == 0
+
+
+def test_hook_record_stop_without_background_tasks() -> None:
+    """
+    ``Stop`` without ``background_tasks`` → ``background_task_count`` is 0.
+    """
+    record = _hook_record_from_jsonl_record(_make_jsonl_record({"hook_event_name": "Stop"}))
+    assert record.event_name == "Stop"
+    assert record.background_task_count == 0
+
+
+def test_hook_record_non_stop_event_has_zero_background_tasks() -> None:
+    """
+    Non-Stop events always have ``background_task_count == 0``.
+    """
+    record = _hook_record_from_jsonl_record(
+        _make_jsonl_record(
+            {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+            }
+        )
+    )
+    assert record.background_task_count == 0
